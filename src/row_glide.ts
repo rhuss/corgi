@@ -3,6 +3,7 @@
 //! then fades there. The text itself only moves by whole rows. Hosts
 //! without Kitty graphics get a truecolor tint where the row lands.
 import { deflateSync } from "node:zlib";
+import * as faces from "./moonlander/faces";
 import { colors } from "./palette";
 import type { Cell } from "./fork_motion";
 
@@ -51,19 +52,14 @@ export function tint(ms: number): number {
 }
 
 const encoded = new Map<string, string>();
+// PNG rather than o=z: Ghostty 1.3.1 crashes inflating o=z images over 64 KiB.
 function pixels(width: number, height: number, alpha: number): string {
   const key = `${width}x${height}:${alpha}`;
   let data = encoded.get(key);
   if (data === undefined) {
-    const rgba = Buffer.alloc(width * height * 4);
-    const [r, g, b] = colors.accent;
-    for (let i = 0; i < rgba.length; i += 4) {
-      rgba[i] = r;
-      rgba[i + 1] = g;
-      rgba[i + 2] = b;
-      rgba[i + 3] = alpha;
-    }
-    data = deflateSync(rgba, { level: 1 }).toString("base64");
+    const size = { width, height },
+      idat = deflateSync(faces.scanlines(size, new Uint8Array(width * height).fill(alpha), 8), { level: 1 });
+    data = Buffer.from(faces.png(size, colors.accent, 8, idat)).toString("base64");
     if (encoded.size >= 128) encoded.clear();
     encoded.set(key, data);
   }
@@ -91,7 +87,7 @@ export function place(
   if (width <= 0 || to <= from || level === 0) return "";
   const shown = top + from,
     row = Math.floor(shown / cell.height);
-  const keys = `a=T,f=32,o=z,s=${width},v=${height},i=${image_id},p=1,Y=${shown - row * cell.height},y=${from},h=${to - from},z=-1,C=1,q=2`;
+  const keys = `a=T,f=100,i=${image_id},p=1,Y=${shown - row * cell.height},y=${from},h=${to - from},z=-1,C=1,q=2`;
   const data = pixels(width, height, level);
   let out = `\x1b7\x1b[${row + 1};${x + 1}H`;
   for (let offset = 0; offset < data.length; offset += 4096) {
