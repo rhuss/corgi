@@ -1,5 +1,6 @@
 //! Fork hero motion and host-cell-sized Kitty graphics.
 import { deflateSync } from "node:zlib";
+import * as faces from "./moonlander/faces";
 import * as palette from "./palette";
 export const width = 12;
 const junction = 4,
@@ -186,14 +187,15 @@ export function draw(x: number, y: number, hero: Hero, now: number) {
   return out + "\x1b8";
 }
 class Canvas {
-  pixels: Buffer;
+  alpha: Uint8Array;
   constructor(
     public w: number,
     public h: number,
+    public color: palette.Rgb,
   ) {
-    this.pixels = Buffer.alloc(w * h * 4);
+    this.alpha = new Uint8Array(w * h);
   }
-  fill(x0: number, y0: number, x1: number, y1: number, color: palette.Rgb, contains = (x: number, y: number) => true) {
+  fill(x0: number, y0: number, x1: number, y1: number, contains = (x: number, y: number) => true) {
     for (let py = Math.max(0, Math.floor(y0)); py < Math.min(this.h, Math.ceil(y1)); py++)
       for (let px = Math.max(0, Math.floor(x0)); px < Math.min(this.w, Math.ceil(x1)); px++) {
         let hits = 0;
@@ -203,25 +205,24 @@ class Canvas {
               y = py + (sy + 0.5) / 4;
             if (x >= x0 && x < x1 && y >= y0 && y < y1 && contains(x, y)) hits++;
           }
-        const a = Math.floor((hits * 255) / 16),
-          i = (py * this.w + px) * 4;
-        if (hits && a >= this.pixels[i + 3]) {
-          for (let j = 0; j < 3; j++) this.pixels[i + j] = color[j];
-          this.pixels[i + 3] = a;
-        }
+        const i = py * this.w + px;
+        this.alpha[i] = Math.max(this.alpha[i], Math.floor((hits * 255) / 16));
       }
   }
-  rect(x0: number, y0: number, x1: number, y1: number, color: palette.Rgb) {
-    this.fill(x0, y0, x1, y1, color);
+  rect(x0: number, y0: number, x1: number, y1: number) {
+    this.fill(x0, y0, x1, y1);
   }
 }
+// PNG rather than o=z: Ghostty 1.3.1 crashes inflating o=z images over 64 KiB.
 function transmit(id: number, c: Canvas) {
-  const encoded = deflateSync(c.pixels, { level: 1 }).toString("base64");
+  const size = { width: c.w, height: c.h },
+    idat = deflateSync(faces.scanlines(size, c.alpha, 8), { level: 1 }),
+    encoded = Buffer.from(faces.png(size, c.color, 8, idat)).toString("base64");
   let out = "";
   for (let off = 0; off < encoded.length; off += 4096) {
     const end = Math.min(off + 4096, encoded.length),
       more = Number(end < encoded.length);
-    out += off === 0 ? `\x1b_Ga=t,t=d,f=32,o=z,s=${c.w},v=${c.h},i=${id},q=2,m=${more};` : `\x1b_Gm=${more};`;
+    out += off === 0 ? `\x1b_Ga=t,t=d,f=100,i=${id},q=2,m=${more};` : `\x1b_Gm=${more};`;
     out += encoded.slice(off, end) + "\x1b\\";
   }
   return out;
@@ -230,28 +231,26 @@ export function upload(cell: Cell) {
   const g = metrics(cell);
   let out = "";
   for (const id of [first_id, first_id + 1]) {
-    const c = new Canvas(g.cw, g.ch),
-      color = palette.colors[id === first_id ? "muted" : "accent"];
-    c.rect(0, g.h_top, Math.ceil(g.cx - g.r + g.t / 2), g.h_top + g.t, color);
-    c.fill(0, 0, g.cw, g.ch, color, (x, y) => (x - g.cx) ** 2 + (y - g.cy) ** 2 <= g.r * g.r);
+    const c = new Canvas(g.cw, g.ch, palette.colors[id === first_id ? "muted" : "accent"]);
+    c.rect(0, g.h_top, Math.ceil(g.cx - g.r + g.t / 2), g.h_top + g.t);
+    c.fill(0, 0, g.cw, g.ch, (x, y) => (x - g.cx) ** 2 + (y - g.cy) ** 2 <= g.r * g.r);
     out += transmit(id, c);
   }
   for (const up of [true, false])
     for (let k = 0; k <= corners; k++) {
-      const c = new Canvas((node_col - junction) * g.cw, (stem_rows + 1) * g.ch),
+      const c = new Canvas((node_col - junction) * g.cw, (stem_rows + 1) * g.ch, palette.colors.faint),
         row = up ? 0 : stem_rows * g.ch,
-        node_x = (node_col - junction) * g.cw,
-        color = palette.colors.faint;
-      if (k === 0) c.rect(0, row + g.h_top, node_x, row + g.h_top + g.t, color);
+        node_x = (node_col - junction) * g.cw;
+      if (k === 0) c.rect(0, row + g.h_top, node_x, row + g.h_top + g.t);
       else {
         const share = k / corners,
           ry = (g.ch / 2) * share,
           rx = (g.cw / 2) * share,
           cy = row + g.cy + (up ? ry : -ry),
           cx = g.cx + rx;
-        if (up) c.rect(g.v_left, cy, g.v_left + g.t, c.h, color);
-        else c.rect(g.v_left, 0, g.v_left + g.t, cy, color);
-        c.fill(0, 0, g.cw, c.h, color, (x, y) => {
+        if (up) c.rect(g.v_left, cy, g.v_left + g.t, c.h);
+        else c.rect(g.v_left, 0, g.v_left + g.t, cy);
+        c.fill(0, 0, g.cw, c.h, (x, y) => {
           const dx = x - cx,
             dy = y - cy;
           if (dx > 0 || (up ? dy > 0 : dy < 0)) return false;
@@ -259,7 +258,7 @@ export function upload(cell: Cell) {
             slope = Math.hypot((2 * dx) / (rx * rx), (2 * dy) / (ry * ry));
           return slope > 0 && Math.abs(f) / slope <= g.t / 2;
         });
-        c.rect(g.cx + rx, row + g.h_top, node_x, row + g.h_top + g.t, color);
+        c.rect(g.cx + rx, row + g.h_top, node_x, row + g.h_top + g.t);
       }
       out += transmit(branchId(up, k), c);
     }

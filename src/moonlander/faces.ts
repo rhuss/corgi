@@ -137,6 +137,10 @@ export async function encode(
   bits: Bits = 4,
   deflate: Compress = compress,
 ): Promise<Uint8Array> {
+  return png(atlas, color, bits, await deflate(scanlines(atlas, alpha, bits)));
+}
+/** The image data `encode` deflates: one palette index per pixel. */
+export function scanlines(atlas: Pick<Atlas, "width" | "height">, alpha: Uint8Array, bits: Bits): Uint8Array {
   const { width, height } = atlas,
     levels = (1 << bits) - 1,
     stride = Math.ceil((width * bits) / 8);
@@ -147,6 +151,12 @@ export async function encode(
       const a = Math.round((alpha[y * width + x] * levels) / 255);
       raw[y * (stride + 1) + 1 + ((x * bits) >> 3)] |= a << (8 - bits - ((x * bits) & 7));
     }
+  return raw;
+}
+/** Wraps deflated `scanlines` in a PNG. */
+export function png(atlas: Pick<Atlas, "width" | "height">, color: Rgb, bits: Bits, idat: Uint8Array): Uint8Array {
+  const { width, height } = atlas,
+    levels = (1 << bits) - 1;
   const plte = new Uint8Array((levels + 1) * 3),
     trns = new Uint8Array(levels + 1);
   for (let i = 0; i <= levels; i++) {
@@ -163,7 +173,7 @@ export async function encode(
     chunk("IHDR", ihdr),
     chunk("PLTE", plte),
     chunk("tRNS", trns),
-    chunk("IDAT", await deflate(raw)),
+    chunk("IDAT", idat),
     chunk("IEND", new Uint8Array()),
   ];
   const out = new Uint8Array(chunks.reduce((n, c) => n + c.length, 0));

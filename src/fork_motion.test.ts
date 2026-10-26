@@ -53,13 +53,39 @@ test("the hero at rest is text: node glyphs where the host draws them, dots else
   expect(fallback.split("●").length - 1).toBe(2);
   expect(fallback).not.toContain("\uf5f2");
 });
-test("images go out compressed, once each, and unpack to their pixels", () => {
+function decode(png: Buffer) {
+  const chunks: Record<string, Buffer[]> = {};
+  for (let at = 8; at < png.length;) {
+    const len = png.readUInt32BE(at),
+      type = png.toString("latin1", at + 4, at + 8);
+    (chunks[type] ??= []).push(png.subarray(at + 8, at + 8 + len));
+    at += 12 + len;
+  }
+  const w = chunks.IHDR[0].readUInt32BE(0),
+    h = chunks.IHDR[0].readUInt32BE(4),
+    rows = inflateSync(Buffer.concat(chunks.IDAT)),
+    pixels = Buffer.alloc(w * h * 4);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const i = rows[y * (w + 1) + 1 + x];
+      chunks.PLTE[0].copy(pixels, (y * w + x) * 4, i * 3, i * 3 + 3);
+      pixels[(y * w + x) * 4 + 3] = chunks.tRNS[0][i];
+    }
+  return { w, h, pixels };
+}
+test("images go out as PNG, once each, and unpack to their pixels", () => {
   const sent = f.upload({ width: 9, height: 20 });
-  expect(sent.split("a=t,").length - 1).toBe(16);
-  const pixels = inflateSync(Buffer.from(sent.slice(sent.indexOf(";") + 1, sent.indexOf("\x1b\\")), "base64"));
-  expect(pixels.length).toBe(9 * 20 * 4);
+  expect(sent.split("a=t,t=d,f=100,").length - 1).toBe(16);
+  const png = decode(Buffer.from(sent.slice(sent.indexOf(";") + 1, sent.indexOf("\x1b\\")), "base64"));
+  expect([png.w, png.h]).toEqual([9, 20]);
   const center = (10 * 9 + 4) * 4;
-  expect([...pixels.subarray(center, center + 3)]).toEqual(colors.muted);
-  expect(pixels[center + 3]).toBe(255);
-  expect(pixels[3]).toBe(0);
+  expect([...png.pixels.subarray(center, center + 3)]).toEqual(colors.muted);
+  expect(png.pixels[center + 3]).toBe(255);
+  expect(png.pixels[3]).toBe(0);
+});
+test("large cells never ask the terminal to inflate zlib data", () => {
+  // Ghostty 1.3.1 crashes inflating o=z images over its 64 KiB window.
+  const sent = f.upload({ width: 22, height: 46 });
+  expect(sent).not.toContain("o=z");
+  expect(sent.split("a=t,t=d,f=100,").length - 1).toBe(16);
 });
