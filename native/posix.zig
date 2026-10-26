@@ -3,6 +3,13 @@ const std = @import("std");
 const builtin = @import("builtin");
 const c = @cImport({
     @cUndef("_FORTIFY_SOURCE");
+    if (builtin.os.tag == .macos) {
+        // The macOS 26.5 and 27.0 SDKs assert Mach message struct sizes,
+        // but translate-c can't size their bitfields. Use the SDK's non-arm64 no-op.
+        @cInclude("mach/port.h");
+        @cUndef("xnu_static_assert_struct_size");
+        @cDefine("xnu_static_assert_struct_size(name, size)", "_Static_assert(1, \"\")");
+    }
     @cInclude("sys/socket.h");
     @cInclude("sys/ioctl.h");
     @cInclude("sys/un.h");

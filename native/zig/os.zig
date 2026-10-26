@@ -4,6 +4,13 @@ const corgi_options = @import("corgi_options");
 pub const c = @cImport({
     // glibc's fortified variadic wrappers cannot be translated by Zig.
     @cUndef("_FORTIFY_SOURCE");
+    if (builtin.os.tag == .macos) {
+        // The macOS 26.5 and 27.0 SDKs assert Mach message struct sizes,
+        // but translate-c can't size their bitfields. Use the SDK's non-arm64 no-op.
+        @cInclude("mach/port.h");
+        @cUndef("xnu_static_assert_struct_size");
+        @cDefine("xnu_static_assert_struct_size(name, size)", "_Static_assert(1, \"\")");
+    }
     @cInclude("unistd.h");
     @cInclude("stdlib.h");
     @cInclude("fcntl.h");
