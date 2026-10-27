@@ -104,8 +104,12 @@ let selected_bg: string,
   /** The inline rename field's fill, as the agent search's, so it stands out
    * on a selected row too, and its hint. */
   rename_field: string,
-  rename_hint: string;
+  rename_hint: string,
+  voice_on: string,
+  voice_off: string;
 palette.derived(() => {
+  voice_on = new Style({ fg: "accent", bg: "bg", bold: true }).sgr();
+  voice_off = new Style({ fg: "faint", bg: "bg" }).sgr();
   selected_bg = bg("selected");
   rename_field = new Style({ fg: "text", bg: "surface" }).sgr();
   rename_hint = new Style({ fg: "muted", bg: "surface" }).sgr();
@@ -632,8 +636,11 @@ export type Hit =
   | { tag: "archives" }
   | { tag: "archived_workspace"; workspace: number }
   | { tag: "workspace_scope" }
-  | { tag: "workspace"; workspace: number };
+  | { tag: "workspace"; workspace: number }
+  | { tag: "voice" };
 const hit = <T extends Hit["tag"]>(tag: T): Hit => ({ tag }) as Hit;
+/** The shortest title the voice indicator may shorten it to, as in "work…". */
+const min_title = 5;
 /** A row renamed in place: its field drawn over the name, the notice from
  * its last try, and the name the row falls back to while the text is empty. */
 export type RenameState = { target: RenameTarget; field: Dialog; message: string | null; fallback: string };
@@ -671,6 +678,8 @@ export class View {
   new_shortcut: string | null = null;
   workspace_scope = "";
   corgi_badge: corgiBadge.Mode = "none";
+  /** Voice mode's state, shown in the title row while it is attached. */
+  voice: "listening" | "muted" | null = null;
   supports_kitty_graphics = false;
   /** The host's cell in pixels, for images placed by the pixel. */
   cell: Cell | null = null;
@@ -1254,6 +1263,8 @@ export class View {
       if (x >= v.width - (v.workspace_scope ? 2 : 5)) return hit("toggle");
       if (v.workspace_scope ? x >= v.width - 8 && x < v.width - 3 : x >= v.width - 11 && x < v.width - 6)
         return hit("workspace_new");
+      const mic = v.voiceLabel();
+      if (mic && x >= mic.x && x < mic.x + displayWidth(mic.text)) return hit("voice");
     }
     if (
       y === v.middle() &&
@@ -1495,6 +1506,32 @@ export class View {
   private thumbStyle(section: Section): string {
     return this.focus === section ? outline : panel + fg("faint");
   }
+  /** Where the voice indicator goes in the title row: a music note left of
+   * `[ + ]` (♫ listening, ♪ muted), spaced from it when there is room. Beside the corgi badge the
+   * title shortens for it. Null while no voice is attached or the row cannot
+   * fit it. With the workspace scope shown, it goes after the scope instead
+   * and never shortens the title. */
+  voiceLabel(): { x: number; text: string } | null {
+    if (!this.voice || this.width === 0) return null;
+    const note = this.voice === "listening" ? "♫" : "♪",
+      scope = this.workspaceScope();
+    if (scope) {
+      const end = this.width - 8,
+        room = end - (scope.x + scope.w);
+      return room >= 2 ? { x: end - 2, text: note } : room >= 1 ? { x: end - 1, text: note } : null;
+    }
+    const end = this.width - 11,
+      room = end - (this.titleX() + displayWidth(i18n.t`workspaces`) + 1);
+    if (room >= 2) return { x: end - 2, text: note };
+    // The button's own background sets it apart.
+    if (room >= 1 || (this.corgi_badge !== "none" && end - 2 - this.titleX() >= min_title))
+      return { x: end - 1, text: note };
+    return null;
+  }
+  /** Where the title starts: after the corgi badge when it shows. */
+  private titleX(): number {
+    return this.corgi_badge !== "none" ? 5 : 1;
+  }
   /** The title row again over a sidebar drawn dimmed, its border included,
    * with `[ + ]` lit as the call to action while `create` is. */
   drawTitleRow(w: Writer, create: boolean): void {
@@ -1523,6 +1560,7 @@ export class View {
     const v = this;
     const scope = v.workspaceScope();
     w.write(`${w.cup(1, v.width - (scope ? 1 : 4))}${panel}` + (scope ? "<" : " < "));
+    const mic = v.voiceLabel();
     if (scope) {
       if (v.corgi_badge === "emoji") w.write(`${w.cup(1, 2)}${panel}${corgiBadge.emoji}`);
       const start = v.corgi_badge === "none" ? 1 : 5;
@@ -1534,9 +1572,10 @@ export class View {
     } else if (v.corgi_badge !== "none") {
       if (v.corgi_badge === "emoji") w.write(`${w.cup(1, 2)}${panel}${corgiBadge.emoji}`);
       w.write(`${w.cup(1, 6)}\x1b[1m` + fg("strong"));
-      writeEllipsis(w, i18n.t`workspaces`, sat(v.width, 17));
+      writeEllipsis(w, i18n.t`workspaces`, Math.min(sat(v.width, 17), mic ? mic.x - 1 - v.titleX() : Infinity));
     } else v.line(w, 0, i18n.t`workspaces`, "\x1b[1m" + fg("strong"));
     w.write(w.cup(1, v.width - (scope ? 7 : 10)) + (create ? palette.call_to_action : button) + `[ + ]${panel}`);
+    if (mic) w.write(w.cup(1, mic.x + 1) + (v.voice === "listening" ? voice_on : voice_off) + mic.text + panel);
   }
   /** The title row and the workspace list above the agents. */
   private drawWorkspaces(w: Writer, workspaces: WorkspaceEntry[], now_ms: number): void {
