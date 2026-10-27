@@ -376,6 +376,7 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       // Nothing reads a sleeping or exited pane's input.
       if (p.dormant) throw Error("PaneAsleep");
       if (p.terminal.exited) throw Error("PaneExited");
+      p.dictated = false;
       const t = p.terminal;
       await t.send(agentMessage.paste(t, request.payload.text) + (request.payload.enter ? agentMessage.enter(t) : ""));
       return location(r, request.payload.target);
@@ -389,6 +390,7 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
         .map((k: string) => viewerNative.encodeKey(p.terminal.handle, logicalKey(k)))
         .join("");
       p.detection.observeInput(output, Date.now() * 1000);
+      p.dictated = false;
       await p.terminal.send(output);
       return location(r, request.payload.target);
     }
@@ -660,6 +662,7 @@ function build(r: Runtime, viewer: boolean) {
     shell: shellStatus(),
     smart_links: r.ports.enabled,
     auto_retry: r.auto_retry,
+    voice: r.voice.projection(),
     system_usage: r.system_usage,
     system_working: r.system_working,
     server_pid: process.pid,
