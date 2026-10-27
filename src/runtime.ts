@@ -21,6 +21,7 @@ import { Status as InferenceStatus } from "./inference/setup";
 import type { Target } from "./agent_order";
 import type { Session } from "./headless";
 import { Briefs } from "./worktree_briefs";
+import { Presence as VoicePresence } from "./voice/presence";
 export type Create = {
   workspace: number;
   split?: { pane: number; axis: Axis; before?: boolean } | null;
@@ -199,6 +200,8 @@ export class Pane {
   /** The command that attaches to its agent where that already runs. */
   attached: string | null = null;
   ghost: Ghost | null = null;
+  /** Dictation typed last here, so the next utterance joins it with a space. */
+  dictated = false;
   /** Recovered with nothing running: its old screen, faded, until `Runtime.wake`. */
   dormant = false;
   /** The account the agent a saved command started reads from its own
@@ -298,6 +301,7 @@ export class Pane {
   }
   /** Typing into a restored agent shows it at once, so what's typed shows. */
   typed(data: string) {
+    if (!keys.mouseReport(data)) this.dictated = false;
     if (!this.ghost || keys.mouseReport(data)) return false;
     this.dropGhost();
     return true;
@@ -434,6 +438,8 @@ export class Runtime {
   ports = new trackers.ports.Tracker();
   resources = new trackers.resources.Tracker();
   link_labels = new trackers.link_labels.Cache();
+  /** The attached voice mode, if any; never saved. */
+  voice = new VoicePresence();
   changed() {
     this.revision = BigInt.asUintN(64, this.revision + 1n);
     this.durable = BigInt.asUintN(64, this.durable + 1n);

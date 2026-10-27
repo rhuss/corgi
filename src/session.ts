@@ -288,6 +288,7 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
       const p = r.pane(request.payload.target);
       if (!p) throw Error("NoPane");
       const bracketed = p.terminal.bracketed_paste ?? false;
+      p.dictated = false;
       await p.terminal.send(
         (bracketed ? "\x1b[200~" : "") +
           request.payload.text +
@@ -305,6 +306,7 @@ async function executeInner(r: Runtime, ctx: Context, cmd: protocol.Command): Pr
         .map((k: string) => viewerNative.encodeKey(p.terminal.handle, logicalKey(k)))
         .join("");
       p.detection.observeInput(output, Date.now() * 1000);
+      p.dictated = false;
       await p.terminal.send(output);
       return location(r, request.payload.target);
     }
@@ -562,6 +564,7 @@ function build(r: Runtime, viewer: boolean) {
     inference: r.inference,
     shell: shellStatus(),
     smart_links: r.ports.enabled,
+    voice: r.voice.projection(),
     system_usage: r.system_usage,
     system_working: r.system_working,
     server_pid: process.pid,

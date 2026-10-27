@@ -162,6 +162,7 @@ export async function replace(server: Server, requester: Client, executable: str
     await Bun.sleep(5);
   }
   await server.summaries?.pause();
+  server.closeVoice();
   server.pause();
   const fds = new Int32Array(2);
   let stateFD = -1,
