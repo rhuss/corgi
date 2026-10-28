@@ -91,7 +91,7 @@ export function close(view: Controller): void {
   view.runtime.destroy();
 }
 export async function sync(view: Controller, bell: { seq: bigint }, play_sound: boolean): Promise<boolean> {
-  view.sweepPicked();
+  view.sweepPickState();
   for (const p of view.runtime.panes) {
     const held = view.selection?.pane === p.id || view.gesture?.pane === p.id;
     if (p.terminal.holding_selection && !held) p.terminal.clearSelection();

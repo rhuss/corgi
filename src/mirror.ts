@@ -167,7 +167,7 @@ export class Terminal {
         to_x: to?.x ?? null,
         to_y: to?.y ?? null,
       });
-      return { match: reply.match ?? null, shown: reply.shown, copy: reply.copy, link: reply.link };
+      return { match: reply.match ?? null, shown: reply.shown, copy: reply.copy };
     } catch {
       return null;
     }
