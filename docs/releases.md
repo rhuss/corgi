@@ -92,5 +92,8 @@ replace the signing key trusted by existing installations. Published versions
 remain available for existing installers and rollback.
 
 Local binaries and debug symbols stay under `.git/corgi-releases/` (the common
-Git directory for linked worktrees). Keep the symbols needed for crash diagnosis.
+Git directory for linked worktrees). Keep the symbols needed for crash diagnosis;
+with `sentry` configured, publishing uploads them. `./publish.sh --clean` then
+deletes every saved release, published or not, and the checkouts that
+interrupted runs left behind.
 For build-only and retry options, use `./publish.sh --help`.

@@ -119,6 +119,40 @@ export async function withReleaseCheckout<T>(
     await rm(base, { recursive: true, force: true });
   }
 }
+// Publishing and cleaning up run one at a time.
+async function locked<T>(lock: string, run: () => Promise<T>) {
+  await mkdir(lock).catch(() => {
+    throw new Error(
+      `Another publisher is running (or left ${lock}); remove it only after confirming no publisher is running.`,
+    );
+  });
+  try {
+    return await run();
+  } finally {
+    await rm(lock, { recursive: true });
+  }
+}
+// Release checkouts still registered after their run was killed.
+export function abandonedCheckouts(cwd: string) {
+  return git(cwd, "worktree", "list", "--porcelain")
+    .split("\n")
+    .filter(line => /^worktree .*\/corgi-release-[^/]+\/source$/.test(line))
+    .map(line => line.slice("worktree ".length));
+}
+// Published releases live in the bucket, and their debug files in Sentry.
+export async function clean(cwd: string) {
+  const paths = releasePaths(cwd);
+  return locked(paths.lock, async () => {
+    const checkouts = abandonedCheckouts(cwd);
+    for (const source of checkouts) {
+      git(cwd, "worktree", "remove", "--force", source);
+      await rm(dirname(source), { recursive: true, force: true });
+    }
+    const releases = existsSync(paths.releases) ? readdirSync(paths.releases).length : 0;
+    await rm(paths.releases, { recursive: true, force: true });
+    return { releases, checkouts: checkouts.length };
+  });
+}
 const os = process.platform === "darwin" ? "macos" : process.platform,
   arch = process.arch === "arm64" ? "aarch64" : "x86_64";
 // The release target this machine runs.
@@ -510,7 +544,16 @@ async function main() {
   const argv = process.argv.slice(2);
   if (argv[0] === "--help") {
     console.log(
-      "Usage: ./scripts/release [VERSION] [--dry-run | --build-only | --publish-only] [--skip-tests]\n       ./scripts/release --init-key PATH\n\nBuilds macOS arm64 + Linux amd64 and arm64, signs the macOS binary (keychain on a Mac, or rcodesign with\ncodesignP12 anywhere), then publishes to an S3-compatible bucket. Config: ~/.config/corgi/release.json or CORGI_RELEASE_CONFIG.\nCredentials: private credentialsFile in config, or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (R2/S3).\nBuilds committed HEAD in an isolated checkout, leaving pending edits and development build outputs alone.\nOmit VERSION for UTC datetime + Git hash. --build-only does not upload, and runs on Linux too.\n--publish-only requires VERSION and resumes the saved commit without rebuilding/signing, even if HEAD has moved.\n--skip-tests builds without running the typecheck and test suites.",
+      "Usage: ./scripts/release [VERSION] [--dry-run | --build-only | --publish-only] [--skip-tests]\n       ./scripts/release --init-key PATH\n       ./scripts/release --clean\n\nBuilds macOS arm64 + Linux amd64 and arm64, signs the macOS binary (keychain on a Mac, or rcodesign with\ncodesignP12 anywhere), then publishes to an S3-compatible bucket. Config: ~/.config/corgi/release.json or CORGI_RELEASE_CONFIG.\nCredentials: private credentialsFile in config, or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (R2/S3).\nBuilds committed HEAD in an isolated checkout, leaving pending edits and development build outputs alone.\nOmit VERSION for UTC datetime + Git hash. --build-only does not upload, and runs on Linux too.\n--publish-only requires VERSION and resumes the saved commit without rebuilding/signing, even if HEAD has moved.\n--skip-tests builds without running the typecheck and test suites.\n--clean deletes every saved release, published or not, and checkouts left by interrupted runs.",
+    );
+    return;
+  }
+  if (argv[0] === "--clean") {
+    if (argv.length !== 1) throw new Error("--clean takes no other arguments.");
+    const removed = await clean(repo);
+    const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+    console.log(
+      `Removed ${count(removed.releases, "saved release")} and ${count(removed.checkouts, "interrupted checkout")}.`,
     );
     return;
   }
@@ -596,12 +639,6 @@ async function main() {
     .subarray(-32)
     .toString("hex");
   await mkdir(dirname(out), { recursive: true });
-  const lock = paths.lock;
-  await mkdir(lock).catch(() => {
-    throw new Error(
-      `Another publisher is running (or left ${lock}); remove it only after confirming no publisher is running.`,
-    );
-  });
   const run = async (source: string) => {
     const env = releaseEnvironment(repo, source);
     const runCommand = (argv: string[], capture = false) => command(source, env, argv, capture);
@@ -854,11 +891,7 @@ async function main() {
       `Published Corgi ${version} for macOS arm64 and Linux amd64 and arm64.\nInstall: curl -fsSL ${config.publicBaseUrl}/install.sh | bash\nSource: ${commit}\nNo Git tags or remotes were changed.`,
     );
   };
-  try {
-    await withReleaseCheckout(repo, commit, run);
-  } finally {
-    await rm(lock, { recursive: true });
-  }
+  await locked(paths.lock, () => withReleaseCheckout(repo, commit, run));
 }
 if (import.meta.main)
   main().catch(error => {

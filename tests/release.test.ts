@@ -12,6 +12,7 @@ import {
   releasePaths,
   releaseCommit,
   withReleaseCheckout,
+  clean,
   releaseEnvironment,
   macosSdk,
   validateBinary,
@@ -306,6 +307,37 @@ test("resume uses the saved commit after HEAD moves and retains artifacts", asyn
     expect(await Bun.file(join(out, "artifact")).text()).toBe("signed bytes");
     await writeFile(join(out, "prepared.json"), JSON.stringify({ commit: "../../invalid", version }));
     await expect(releaseCommit(dir, options, paths.releases)).rejects.toThrow("Invalid prepared");
+  });
+});
+
+test("clean removes saved releases and interrupted checkouts, but waits for a publisher", async () => {
+  await releaseFixture(async (dir, git) => {
+    const paths = releasePaths(dir);
+    await mkdir(join(paths.releases, "1.2.3"), { recursive: true });
+    await writeFile(join(paths.releases, "1.2.3", "artifact"), "signed bytes");
+    const killed = join(await mkdtemp(join(tmpdir(), "corgi-release-")), "source");
+    git("worktree", "add", "--detach", killed);
+    const swept = join(await mkdtemp(join(tmpdir(), "corgi-release-")), "source");
+    git("worktree", "add", "--detach", swept);
+    await rm(swept, { recursive: true });
+    const other = join(dir, "other");
+    git("worktree", "add", "--detach", other);
+
+    await mkdir(paths.lock);
+    await expect(clean(dir)).rejects.toThrow("Another publisher is running");
+    expect(await Bun.file(join(paths.releases, "1.2.3", "artifact")).exists()).toBe(true);
+    expect(git("worktree", "list")).toContain(killed);
+    await rm(paths.lock, { recursive: true });
+
+    expect(await clean(dir)).toEqual({ releases: 1, checkouts: 2 });
+    expect(await stat(paths.releases).catch(() => null)).toBeNull();
+    expect(await stat(join(killed, "..")).catch(() => null)).toBeNull();
+    expect(await stat(join(swept, "..")).catch(() => null)).toBeNull();
+    const worktrees = git("worktree", "list");
+    expect(worktrees).not.toContain("corgi-release-");
+    expect(worktrees).toContain(other);
+    expect(await stat(paths.lock).catch(() => null)).toBeNull();
+    expect(await clean(dir)).toEqual({ releases: 0, checkouts: 0 });
   });
 });
 
