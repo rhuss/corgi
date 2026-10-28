@@ -43,7 +43,7 @@ Run from the repository root of the integration worktree. `S=.claude/skills/inte
    - `bun build.ts`
 
    On failure, decide whether it comes from upstream, a branch, or the combination, and report it. Do not fix code in PR branches here; the user can roll back with `git reset --hard integration-prev`.
-6. If the build succeeded, hot-swap the running main runtime: `./dist/corgi reload`. Panes survive; on failure the old daemon keeps running. `UnsupportedStateVersion` means the new build cannot take over live state; report it and tell the user to restart cold from outside corgi (`corgi-dev checkpoint && corgi-dev shutdown && corgi-dev`). If no daemon is running, the next `corgi-dev` starts the new build.
+6. If the build succeeded, hot-swap the running main runtime. Inside corgi (`CORGI_PANE` is set) run `./dist/corgi dev </dev/null`: it reloads the daemon and relaunches the viewer showing this pane on the new build. Outside corgi run `./dist/corgi reload` (daemon only) and tell the user to reattach with `corgi-dev`, since viewer changes need a new viewer. Either way, a running `corgi voice` keeps its old code until restarted; say so. Panes survive; on failure the old daemon keeps running. `UnsupportedStateVersion` means the new build cannot take over live state; report it and tell the user to restart cold from outside corgi (`corgi-dev checkpoint && corgi-dev shutdown && corgi-dev`). If no daemon is running, the next `corgi-dev` starts the new build.
 7. With `--push`: `git push --force-with-lease origin integration`.
 8. `sh $S status`, then report briefly:
    - new upstream commits pulled in (count + notable subjects),
