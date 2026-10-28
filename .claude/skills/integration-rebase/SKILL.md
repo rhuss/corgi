@@ -6,7 +6,7 @@ argument-hint: "[--push] | add <branch> [#PR] | remove <branch>"
 
 # Rebuild the integration branch
 
-The `integration` branch is `upstream/main` + tooling commits + a `--no-ff` merge of every branch listed in `.claude/skills/integration-rebase/branches`. It lives in the worktree `~/Development/context-engineering/corgi-integration` and is launched with `corgi-dev` (named environment `integration`).
+The `integration` branch is `upstream/main` + tooling commits + a `--no-ff` merge of every branch listed in `.claude/skills/integration-rebase/branches`. It lives in the worktree `~/Development/context-engineering/corgi-integration` and runs as the main corgi runtime via `corgi-dev` (`dist/corgi dev`).
 
 Tooling commits are the non-merge commits on the first-parent chain above upstream (this skill and its manifest). `rebuild.sh start` re-applies them, so commit skill or manifest changes directly on `integration`, never in a merge.
 
@@ -43,7 +43,7 @@ Run from the repository root of the integration worktree. `S=.claude/skills/inte
    - `bun build.ts`
 
    On failure, decide whether it comes from upstream, a branch, or the combination, and report it. Do not fix code in PR branches here; the user can roll back with `git reset --hard integration-prev`.
-6. If the build succeeded, hot-swap a running runtime: `bun go.ts --env integration --reload`. A failure here usually means the environment is not running or this session runs inside a different corgi environment; report it, the next `corgi-dev` builds and starts the new version anyway.
+6. If the build succeeded, hot-swap the running main runtime: `./dist/corgi reload`. Panes survive; on failure the old daemon keeps running. `UnsupportedStateVersion` means the new build cannot take over live state; report it and tell the user to restart cold from outside corgi (`corgi-dev checkpoint && corgi-dev shutdown && corgi-dev`). If no daemon is running, the next `corgi-dev` starts the new build.
 7. With `--push`: `git push --force-with-lease origin integration`.
 8. `sh $S status`, then report briefly:
    - new upstream commits pulled in (count + notable subjects),
