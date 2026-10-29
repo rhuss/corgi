@@ -3,8 +3,10 @@ import { readdirSync } from "node:fs";
 import { Agent, Provider, Text, type State } from "./agents";
 import type { PaneMemory, PromptMemory } from "./providers/adapter";
 import { n, ptr, processArgs } from "./native_bridge";
+import { adapter } from "./providers";
 import { processJob, processPath, processTree } from "./os";
 import * as processName from "./process_name";
+import { getLogger } from "./log";
 export type Job = { pid: number; provider: Provider };
 /** A local bridge owns the identity; the provider itself may run elsewhere. */
 export type Claim = { provider: Provider; owner: number; parent: number };
@@ -17,6 +19,14 @@ export function claimAlive(claim: Claim): boolean {
   return processJob(claim.owner)?.ppid === claim.parent;
 }
 export const process_buffer = 1024 * 1024;
+const log = getLogger("detection");
+/** Tells the native layer every provider's programs, so a terminal knows the
+ * agent in front of it when its title changes. */
+export function configureNative() {
+  const table = Buffer.from(JSON.stringify(Provider.all.map(p => adapter(p).programs)));
+  // Titles then follow no agent, which is no reason to stop the daemon.
+  if (n.detection_configure(ptr(table), table.length) !== 0) log.warn("native detection refused the provider programs");
+}
 export function identify(argv: string[]): Provider | null {
   return locate(argv)?.provider ?? null;
 }

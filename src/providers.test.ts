@@ -7,29 +7,56 @@ import * as claudeHeadless from "./providers/claude/headless";
 import { Hooks, timestampMs } from "./providers/common";
 import * as sim from "./providers/sim";
 import type { Settings } from "./providers/adapter";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 test("per-provider values are keyed by name, in the registry's order", () => {
-  expect(JSON.stringify(byProvider(p => p === "claude"))).toBe(
-    '{"codex":false,"claude":true,"pi":false,"opencode2":false}',
-  );
-  expect(Provider.all).toEqual(["codex", "claude", "pi", "opencode2"]);
+  const value = byProvider(p => p === "claude");
+  expect(Object.keys(value)).toEqual(Provider.all);
+  expect(Object.entries(value).filter(([, on]) => on)).toEqual([["claude", true]]);
+  expect(Provider.all.slice(0, 3)).toEqual(["codex", "claude", "pi"]);
   expect(Provider.parse("claude")).toBe("claude");
   expect(Provider.parse("other")).toBeNull();
   expect(Provider.owning("/opt/bin/claude-code")).toBe("claude");
 });
+test("the landing page's stand-in registry lists every provider", async () => {
+  const site = await import("../site/browser/providers");
+  expect(site.Provider.all).toEqual(Provider.all);
+  // Each provider's own command is among the programs that mark it.
+  for (const p of Provider.all) expect(site.adapter(p).programs.names).toContain(adapter(p).command);
+});
+test("every provider id is one corgi-hook forwards", () => {
+  for (const p of Provider.all) expect(Provider.wellFormed(p)).toBe(true);
+  for (const id of ["", "Claude", "gemini_cli", "open-code", "a".repeat(33)])
+    expect(Provider.wellFormed(id)).toBe(false);
+  expect(() => Provider.register({ ...sim.adapter, id: "Sim" })).toThrow("InvalidProvider");
+});
+test("the native layer's copy of Claude's programs matches the registry", () => {
+  const zig = readFileSync(join(import.meta.dir, "../native/zig/detection.zig"), "utf8"),
+    block = /const claude: Programs = \.\{([\s\S]*?)\n\};/.exec(zig)?.[1] ?? "",
+    field = (key: string) =>
+      [...block.matchAll(/\.(\w+) = &\.\{([^}]*)\}/g)]
+        .filter(m => m[1] === key)
+        .flatMap(m => [...m[2].matchAll(/"([^"]*)"/g)].map(s => s[1]));
+  const programs = adapter("claude").programs;
+  expect(field("names")).toEqual(programs.names);
+  expect(field("markers")).toEqual(programs.markers ?? []);
+  expect(field("scripts")).toEqual(programs.scripts ?? []);
+});
 test("a registered provider is listed, parsed and found until it is removed", () => {
+  const builtIn = [...Provider.all];
   const remove = sim.register();
   try {
-    expect<string[]>(Provider.all).toEqual(["codex", "claude", "pi", "opencode2", "sim"]);
+    expect<string[]>(Provider.all).toEqual([...builtIn, "sim"]);
     expect(Provider.parse("sim")).toBe(sim.sim);
     expect(Provider.owning("sim")).toBe(sim.sim);
     expect(adapter(sim.sim).name).toBe("Sim");
     expect(adapter(sim.sim)).toBe(sim.adapter);
-    expect(Object.keys(byProvider(p => p))).toEqual(["codex", "claude", "pi", "opencode2", "sim"]);
+    expect(Object.keys(byProvider(p => p))).toEqual([...builtIn, "sim"]);
     expect(() => sim.register()).toThrow("ProviderExists");
   } finally {
     remove();
   }
-  expect(Provider.all).toEqual(["codex", "claude", "pi", "opencode2"]);
+  expect(Provider.all).toEqual(builtIn);
   expect(Provider.parse("sim")).toBeNull();
   expect(() => adapter(sim.sim)).toThrow("UnknownProvider");
 });

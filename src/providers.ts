@@ -3,6 +3,7 @@ import * as claude from "./providers/claude";
 import * as pi from "./providers/pi";
 import * as opencode2 from "./providers/opencode2";
 import type { Adapter } from "./providers/adapter";
+import { owns } from "./providers/common";
 export * from "./providers/common";
 /** Every provider Corgi integrates with, by id. `Provider` derives from it,
  * so a provider missing from any `ByProvider` record fails to compile. Key
@@ -15,24 +16,31 @@ const registry = {
 } satisfies Record<string, Adapter>;
 export type Provider = keyof typeof registry;
 export type ByProvider<T> = Record<Provider, T>;
+// What `corgi-hook` forwards; native/hook.zig checks the same shape.
+const id_shape = /^[a-z0-9]{1,32}$/;
 const adapters = new Map<string, Adapter>(Object.entries(registry));
 const all = [...adapters.keys()] as Provider[];
 export const Provider = {
   all,
   /** The provider Corgi offers before the user picks one: the first it lists. */
   first: all[0],
+  /** Whether `id` can name a provider: lowercase letters and digits, at most 32. */
+  wellFormed(id: string): boolean {
+    return id_shape.test(id);
+  },
   /** The provider with this id, as protocol and CLI spell it. */
   parse(name: unknown): Provider | null {
     return all.find(p => p === name) ?? null;
   },
   /** The provider an executable or script at `path` belongs to. */
   owning(path: string): Provider | null {
-    return all.find(p => adapter(p).owns(path)) ?? null;
+    return all.find(p => owns(adapter(p).programs, path)) ?? null;
   },
   /** Adds `provider` until the returned function runs. Tests register a
    * simulated provider to find code that assumes the built-in ones. */
   register(provider: Adapter): () => void {
     if (adapters.has(provider.id)) throw Error("ProviderExists");
+    if (!id_shape.test(provider.id)) throw Error("InvalidProvider");
     adapters.set(provider.id, provider);
     all.push(provider.id as Provider);
     return () => {

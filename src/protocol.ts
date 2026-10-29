@@ -1,7 +1,7 @@
 import * as json from "./json";
 import { Theme } from "./theme";
 import type { View as SurfaceView } from "./pane/surface";
-import { Provider, byProvider } from "./providers";
+import { Provider, type ByProvider } from "./providers";
 import type { Target } from "./agent_order";
 export interface Control {
   seq: bigint;
@@ -127,13 +127,19 @@ export function check(op: string): "none" | "management" | "runtime" | "viewer" 
   return local.has(op) ? "none" : "runtime";
 }
 export const capabilities = operations.filter(op => op !== "hello" && check(op) !== "none");
+/** The protocol versions a request for `op` carries. */
+export function versions(op: string): { protocol?: number; runtime_protocol?: number; viewer_protocol?: number } {
+  return {
+    ...(check(op) !== "none" ? { protocol: check(op) === "management" ? management_version : version } : {}),
+    ...(op === "hello" ? { runtime_protocol: version } : {}),
+    ...(check(op) === "viewer" ? { viewer_protocol: viewer_version } : {}),
+  };
+}
 export function envelope(op: string, payload: Record<string, unknown> = {}): object {
   const fields = op === "viewer.open" ? { cwd: "", onboarding: false, theme: null, ...payload } : payload;
   return {
     op,
-    ...(check(op) !== "none" ? { protocol: check(op) === "management" ? management_version : version } : {}),
-    ...(op === "hello" ? { runtime_protocol: version } : {}),
-    ...(check(op) === "viewer" ? { viewer_protocol: viewer_version } : {}),
+    ...versions(op),
     ...Object.fromEntries(Object.entries(fields).filter(([key, value]) => value !== null || key === "theme")),
   };
 }
@@ -248,7 +254,13 @@ type Member<T extends string> = T extends "provider" ? Provider : T;
 type Alternatives<T extends string> = T extends `${infer Head}|${infer Tail}`
   ? Member<Head> | Alternatives<Tail>
   : Member<T>;
-type TaggedValues = { target: Target; paneDestination: PaneDestination; tabDestination: TabDestination };
+// Types with hand-written validators.
+type CustomValues = {
+  target: Target;
+  paneDestination: PaneDestination;
+  tabDestination: TabDestination;
+  visibility: Partial<ByProvider<boolean>>;
+};
 type Value<T extends string> = T extends `?${infer Inner}`
   ? Value<Inner> | null
   : T extends `[]${infer Inner}`
@@ -265,8 +277,8 @@ type Value<T extends string> = T extends `?${infer Inner}`
               ? unknown
               : T extends "theme"
                 ? Theme | null
-                : T extends keyof TaggedValues
-                  ? TaggedValues[T]
+                : T extends keyof CustomValues
+                  ? CustomValues[T]
                   : T extends keyof typeof structures
                     ? Normalized<(typeof structures)[T]>
                     : Alternatives<T>;
@@ -282,9 +294,11 @@ type InputValue<T extends string> = T extends `?${infer Inner}`
         ? Partial<Pick<Theme, "foreground" | "background" | "palette">> | null
         : T extends "paneDestination"
           ? { new_tab: string } | { beside: Input<typeof structures.beside> }
-          : T extends keyof typeof structures
-            ? Input<(typeof structures)[T]>
-            : Value<T>;
+          : T extends "visibility"
+            ? Partial<ByProvider<boolean>>
+            : T extends keyof typeof structures
+              ? Input<(typeof structures)[T]>
+              : Value<T>;
 type InputField<F extends Field> = InputValue<F extends string ? F : F[0]>;
 type Input<S extends Fields> = {
   -readonly [K in keyof S as S[K] extends string ? K : never]: InputField<S[K]>;
@@ -353,6 +367,13 @@ function validate(value: any, type: string, strict = false): any {
   if (type === "json") return value;
   if (type === "target") return target(value);
   if (type === "paneDestination" || type === "tabDestination") return destination(value, type === "paneDestination");
+  if (type === "visibility") {
+    // Only the providers named: a client may know more or fewer than this daemon.
+    const source = json.object(value),
+      out: Partial<ByProvider<boolean>> = {};
+    for (const p of Provider.all) if (Object.hasOwn(source, p)) out[p] = validate(source[p], "bool");
+    return out;
+  }
   if (type === "theme") {
     try {
       return Object.assign(
@@ -412,7 +433,6 @@ function struct(value: any, fields: Fields, strict: boolean) {
   return out;
 }
 const structures = {
-  visibility: byProvider(() => ["bool", false] as const),
   semantics: {
     provider: ["?provider", null],
     suggested_name: ["string", ""],

@@ -1,14 +1,18 @@
 // Mirrors the tests in agent_launcher.zig.
 import { expect, test } from "bun:test";
-import { Menu, Row, preview } from "./agent_launcher";
+import { Menu, Row, commandEntry, preview, resolution, returned } from "./agent_launcher";
 import { View as SidebarView } from "./sidebar";
 import { analyze } from "./launch/command";
 import { Terminal } from "./pane/terminal";
 import { Writer, displayWidth } from "./text";
+import { Provider, adapter, byProvider } from "./providers";
 
+/** The providers these tests install; the rest are listed as not installed. */
+const installed: Provider[] = ["codex", "claude", "pi"];
+const others = Provider.all.filter(p => !installed.includes(p));
 const menu = (fields: Partial<Menu> = {}) => {
   const value = new Menu({ workspace: 1, selected: "codex", last: "codex", pinned: true, ...fields });
-  value.preview.installed.opencode2 = false;
+  value.preview.installed = byProvider(p => installed.includes(p));
   return value;
 };
 const now = () => Math.floor(Date.now() / 1000);
@@ -259,7 +263,7 @@ test("viewer expires a delivered usage reading after twenty minutes", () => {
 test("launcher hides providers that are not installed", () => {
   const side = SidebarView.init(120, 24, true, 0, 0);
   const m = menu();
-  m.preview.installed = { codex: false, claude: true, pi: false, opencode2: false };
+  m.preview.installed = byProvider(p => p === "claude");
   m.normalize();
   expect(m.selected).toBe("claude");
   const b = m.bounds(120, 24, side);
@@ -271,7 +275,7 @@ test("launcher hides providers that are not installed", () => {
   expect(m.selected).toBe("terminal");
   m.move(true, true);
   expect(m.selected).toBe("claude");
-  m.preview.installed = { codex: false, claude: false, pi: false, opencode2: false };
+  m.preview.installed = byProvider(() => false);
   m.normalize();
   expect(m.selected).toBe("terminal");
   expect(m.first()).toBe("terminal");
@@ -291,7 +295,7 @@ test("Manage agents lists the signed-out and hidden agents the picker leaves out
     ["Codex", "Not signed in", true, true],
     ["Claude Code", "me@example.com", false, false],
     ["Pi", "Unavailable", false, false],
-    ["OpenCode", "Not installed", true, false],
+    ...others.map(p => [adapter(p).label, "Not installed", true, false]),
   ]);
   m.commands[0].set("FOO=123 claude --whatever");
   m.commands[0].hidden = true;
@@ -321,7 +325,7 @@ test("rows hidden in this workspace leave its picker but stay in Manage agents, 
     ["Claude Code", true, false],
     ["Claude Code · work", true, false],
     ["Pi", true, true],
-    ["OpenCode", true, true],
+    ...others.map(p => [adapter(p).label, true, true]),
   ]);
   expect([model.here(0), model.here(1)]).toEqual([false, true]);
   expect(["codex", "claude:/a", "custom5", "terminal", "claude:work", "custom6", ""].map(Row.parse)).toEqual([
@@ -555,15 +559,8 @@ test("digits count account rows like the agents'", () => {
   m.preview = preview({ accounts: [workAccount(), { provider: "codex", account: "/accounts/side", name: "side" }] });
   m.commands[0].set("claude --model opus");
   const c = (s: string) => s.charCodeAt(0);
-  expect([..."0123456"].map(digit => m.shortcutRow(c(digit)))).toEqual([
-    "codex",
-    side,
-    "claude",
-    work,
-    "pi",
-    "opencode2",
-    "custom0",
-  ]);
+  const rows: Row[] = ["codex", side, "claude", work, ...Provider.all.slice(2), "custom0"];
+  expect(rows.map((_, digit) => m.shortcutRow(c(String(digit))))).toEqual(rows);
   m.hidden.codex = true;
   expect([m.shortcutRow(c("0")), m.shortcutRow(c("1"))]).toEqual([side, "claude"]);
   m.account_hidden = ["/accounts/side"];
@@ -759,5 +756,18 @@ test("both cards keep their bounds and columns as account details and usage arri
       expect(m.bounds(cols, 40, side)).toEqual(managing);
       m.back();
     }
+  }
+});
+test("a command for a provider this viewer doesn't know runs no provider", () => {
+  const semantics = { provider: "future", suggested_name: "Future" };
+  expect(commandEntry({ command: "future", semantics }).semantics.provider).toBeNull();
+  const resolved = resolution({ semantics, command: { command: "future", semantics } });
+  expect([resolved.semantics.provider, resolved.command.semantics.provider]).toEqual([null, null]);
+  expect(resolved.semantics.suggested_name).toBe("Future");
+  // Sending them back would erase the provider, so they stay with the daemon.
+  expect([returned(resolved.semantics), returned(resolved.command.semantics)]).toEqual([null, null]);
+  for (const provider of ["codex", null]) {
+    const known = commandEntry({ command: "x", semantics: { provider } }).semantics;
+    expect(returned(known)).toBe(known);
   }
 });

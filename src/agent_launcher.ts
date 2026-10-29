@@ -111,15 +111,28 @@ export function preview(value: any = {}): Preview {
     }),
   };
 }
+// Semantics naming a provider this viewer doesn't know; sending them back would erase it.
+const foreign = new WeakSet<Semantics>();
+/** What a command runs, with a provider this viewer doesn't know read as none. */
+function semantics(value: any): Semantics {
+  const result = Object.assign(new Semantics(), value ?? {});
+  result.provider = Provider.parse(result.provider);
+  if (value?.provider != null && result.provider === null) foreign.add(result);
+  return result;
+}
+/** The semantics to send back with a command, or null to leave them to the daemon. */
+export function returned(s: Semantics): Semantics | null {
+  return foreign.has(s) ? null : s;
+}
 /** A saved launch command from the snapshot, with its methods. */
 export function commandEntry(value: any = {}): CommandEntry {
   const entry = Object.assign(new CommandEntry(), value ?? {});
-  entry.semantics = Object.assign(new Semantics(), value?.semantics ?? {});
+  entry.semantics = semantics(value?.semantics);
   return entry;
 }
 export function resolution(value: any = {}): Resolution {
   const result = Object.assign(new Resolution(), value ?? {});
-  result.semantics = Object.assign(new Semantics(), value?.semantics ?? {});
+  result.semantics = semantics(value?.semantics);
   result.command = commandEntry(value?.command);
   return result;
 }

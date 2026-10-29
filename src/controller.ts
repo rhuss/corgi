@@ -2722,7 +2722,7 @@ export class Controller {
           resolve: false,
           original: f.editor.name(),
           name: f.name_editor.name().length > 0 ? f.name_editor.name() : f.resolution.semantics.suggested_name,
-          semantics: f.resolution.semantics,
+          semantics: agentLauncher.returned(f.resolution.semantics),
         },
       });
     } catch {
@@ -2746,7 +2746,7 @@ export class Controller {
         resolve: false,
         original: entry.original,
         name: entry.name,
-        semantics: entry.semantics,
+        semantics: agentLauncher.returned(entry.semantics),
       },
     });
     const launch = this.launcherModel();
@@ -2986,7 +2986,8 @@ export class Controller {
     }
     for (const stop of this.stopped)
       known.push({ provider: stop.provider, session: stop.session, name: "", at: stop.at });
-    return launcherResume.merge(this.launch_previews.history.entries.map(launcherResume.historyEntry), known);
+    const entries = this.launch_previews.history.entries.filter((e: any) => Provider.parse(e?.provider));
+    return launcherResume.merge(entries.map(launcherResume.historyEntry), known);
   }
   /** Note the conversations panes stop running, and when, so a closed one
    * sorts by when it closed. */

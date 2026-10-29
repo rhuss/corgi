@@ -3,6 +3,7 @@ import { transport } from "./fixtures/transport";
 import { expect, setSystemTime, spyOn, test } from "bun:test";
 import { Controller, agentMessage, cardEffect, pasteKey, forkName, breadcrumbs } from "./controller";
 import * as sim from "./providers/sim";
+import { byProvider } from "./providers";
 import * as preferences from "./preferences";
 import { TabMenu, type Row } from "./commands";
 import { Dialog } from "./name_dialog";
@@ -496,7 +497,7 @@ test.each([false, true])("a failed fallback terminal keeps the empty launcher at
         commands.push(fields);
         throw Error("ShellNotFound");
       }
-      if (op === "viewer.sync") return { viewer_protocol: 3, detach: true };
+      if (op === "viewer.sync") return { viewer_protocol: protocol.viewer_version, detach: true };
       throw Error("UnexpectedRequest");
     }),
   );
@@ -532,7 +533,7 @@ test.each([false, true])("a failed fallback terminal keeps the empty launcher at
 });
 
 test.each([false, true])("empty viewers ignore the legacy detach flag (%s)", async detach => {
-  const s = new Controller(transport(async () => ({ viewer_protocol: 3, detach })));
+  const s = new Controller(transport(async () => ({ viewer_protocol: protocol.viewer_version, detach })));
   s.receiveSnapshot({
     workspaces: [{ id: 1, name: "one", cwd: "/workspace", model: { nodes: [], tabs: [], revision: 0 } }],
     panes: [],
@@ -1450,6 +1451,24 @@ test.each(["launcher", "settings"] as const)(
   },
 );
 
+test("the launcher's history leaves out conversations from a provider the viewer doesn't know", () => {
+  const { s } = recording(folders("/src/app")),
+    entry = (provider: string, session: string) => ({
+      provider,
+      session,
+      title: session,
+      first: "",
+      last: "",
+      cwd: "/src/app",
+      branch: "",
+      updated_at: 1,
+      interrupted: false,
+    });
+  s.launch_previews.history = { pending: false, entries: [entry("future", "a"), entry("codex", "b")] as any };
+  s.openLauncher(true);
+  expect(s.agent_launcher.history.entries.map((e: any) => [e.provider, e.session])).toEqual([["codex", "b"]]);
+});
+
 /** The launcher over a preview that lists Claude Code's `work` account. */
 function withWork(option: object = {}) {
   const recorded = recording(folders("/src/app"));
@@ -1604,7 +1623,7 @@ test("an account's row has a YOLO and launcher membership of its own, apart from
     agent: s.agent_launcher.manageModel().agents.find((a: agentManager.Agent) => a.account === "/accounts/work"),
   });
   expect(sent.at(-1)).toEqual({
-    "agent.visibility": { hidden: { codex: false, claude: false, pi: false, opencode2: false }, hidden_accounts: [] },
+    "agent.visibility": { hidden: byProvider(() => false), hidden_accounts: [] },
   });
   expect([s.agent_launcher.hiddenOf(work), s.agent_launcher.hiddenOf("claude")]).toEqual([false, false]);
   s.agent_launcher.manager.at = agentManager.agentKey("claude", "");
@@ -1613,7 +1632,7 @@ test("an account's row has a YOLO and launcher membership of its own, apart from
     agent: s.agent_launcher.manageModel().agents.find((a: agentManager.Agent) => a.provider === "claude" && !a.account),
   });
   expect(sent.at(-1)).toEqual({
-    "agent.visibility": { hidden: { codex: false, claude: true, pi: false, opencode2: false } },
+    "agent.visibility": { hidden: byProvider(p => p === "claude") },
   });
 });
 

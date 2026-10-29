@@ -3,8 +3,10 @@ import { Controller } from "./controller";
 import { transport } from "./fixtures/transport";
 import * as json from "./json";
 import * as mirror from "./mirror";
+import * as protocol from "./protocol";
 import * as viewer from "./viewer";
 import * as sim from "./providers/sim";
+import { Provider } from "./providers";
 
 test("provider names use the registered display name, not the wire id", () => {
   const unregister = sim.register();
@@ -24,6 +26,28 @@ test("provider names use the registered display name, not the wire id", () => {
   }
 });
 
+test("a provider the viewer doesn't know reads as none", () => {
+  expect(mirror.agent({ provider: "future" }).provider).toBeNull();
+  expect(mirror.providerName(mirror.agent({ provider: "future" }))).toBe("agent");
+});
+
+test("a snapshot's sessions and last agents from a provider the viewer doesn't know are dropped", () => {
+  const runtime = new mirror.Runtime();
+  try {
+    runtime.receive(null as any, {
+      workspaces: [{ id: 1, model: { nodes: [], tabs: [], revision: 0 }, last_agent: "future" }],
+      headless_sessions: [
+        { id: 1, workspace: 1, provider: "future", session: "a" },
+        { id: 2, workspace: 1, provider: "codex", session: "b" },
+      ],
+      last_agent: "future",
+    });
+    expect(runtime.sessions.map(s => s.provider)).toEqual(["codex"]);
+    expect([runtime.last_agent, runtime.workspaces.items[0].last_agent]).toEqual([Provider.first, null]);
+  } finally {
+    runtime.destroy();
+  }
+});
 test("viewer scalars retain their bigint type after small and large wire replies", async () => {
   let value = 1n;
   const requests: any[] = [];
@@ -32,7 +56,7 @@ test("viewer scalars retain their bigint type after small and large wire replies
       requests.push({ op, fields });
       return json.parse(
         json.stringify({
-          viewer_protocol: 3,
+          viewer_protocol: protocol.viewer_version,
           session: null,
           session_hash: value,
           resources: null,
