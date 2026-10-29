@@ -11,13 +11,22 @@ set -eu
 UPSTREAM_REPO=tals/corgi
 BRANCH=integration
 dir=$(cd "$(dirname "$0")" && pwd)
-manifest="$dir/branches"
 cd "$(git -C "$dir" rev-parse --show-toplevel)"
+manifest=INTEGRATION.md
 
 say() { printf 'integration: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
 
-entries() { sed -e 's/[[:space:]]*$//' "$manifest" | grep -v -e '^#' -e '^$' || true; }
+# "<branch> [<PR number>]" for each row of the "## Active" table in INTEGRATION.md.
+entries() {
+  awk -F'|' '
+    /^## / { active = ($0 ~ /^## Active/) }
+    active && /^\| *`/ {
+      branch = $2; gsub(/[ `]/, "", branch)
+      pr = ""; if (match($3, /#[0-9]+/)) pr = substr($3, RSTART + 1, RLENGTH - 1)
+      print branch, pr
+    }' "$manifest"
+}
 
 require_branch() {
   [ "$(git symbolic-ref --short HEAD 2>/dev/null)" = "$BRANCH" ] || die "check out '$BRANCH' first"
