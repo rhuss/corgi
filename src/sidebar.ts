@@ -1507,14 +1507,14 @@ export class View {
   private thumbStyle(section: Section): string {
     return this.focus === section ? outline : panel + fg("faint");
   }
-  /** Where the voice indicator goes in the title row: a music note left of
-   * `[ + ]` (♫ listening, ♪ muted), spaced from it when there is room. Beside the corgi badge the
-   * title shortens for it. Null while no voice is attached or the row cannot
-   * fit it. With the workspace scope shown, it goes after the scope instead
-   * and never shortens the title. */
+  /** Where the voice indicator goes in the title row: a `♫` left of `[ + ]`
+   * (green while listening, faint while muted), spaced from it when there is
+   * room. Beside the corgi badge the title shortens for it. Null while no
+   * voice is attached or the row cannot fit it. With the workspace scope
+   * shown, it goes after the scope instead and never shortens the title. */
   voiceLabel(): { x: number; text: string } | null {
     if (!this.voice || this.width === 0) return null;
-    const note = this.voice === "listening" ? "♫" : "♪",
+    const note = "♫",
       scope = this.workspaceScope();
     if (scope) {
       const end = this.width - 8,
