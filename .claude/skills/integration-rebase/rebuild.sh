@@ -69,7 +69,15 @@ merge() {
       ref=$branch
       if git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null &&
          [ "$(git rev-parse "$branch")" != "$(git rev-parse "origin/$branch")" ]; then
-        say "warn $branch: local differs from origin/$branch, using local"
+        if git merge-base --is-ancestor "$branch" "origin/$branch"; then
+          # Pushed from elsewhere (another checkout, a review fix on GitHub)
+          ref=origin/$branch
+          say "note $branch: local is behind origin/$branch, using origin"
+        elif git merge-base --is-ancestor "origin/$branch" "$branch"; then
+          say "note $branch: local has unpushed commits, using local"
+        else
+          say "warn $branch: local and origin/$branch have diverged, using local"
+        fi
       fi
     elif git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null; then
       ref=origin/$branch

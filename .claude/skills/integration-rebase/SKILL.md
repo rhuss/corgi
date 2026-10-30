@@ -62,4 +62,5 @@ Run from the repository root of the integration worktree. `S=.claude/skills/inte
    - new upstream commits pulled in (count + notable subjects),
    - branches merged (with their description and PR link from INTEGRATION.md), skipped (merged upstream) or retired,
    - conflicts resolved and which PR branches need an upstream rebase,
+   - every `note`/`warn` line from `merge` about local vs. `origin`: a local branch behind `origin` was merged from `origin` (suggest `git merge --ff-only` in its worktree); unpushed or diverged local commits mean the PR does not show what was integrated,
    - typecheck/test/build result and whether the runtime was reloaded.
