@@ -8,6 +8,9 @@ import * as json from "../json";
 import { Runtime, Pane } from "../runtime";
 import { Terminal } from "../pane/terminal";
 import { Workspace } from "../workspace";
+import { Session } from "../headless";
+import { Claude } from "../providers/claude/headless";
+import { Stdio } from "../providers/stdio";
 
 function saved() {
   using r = new Runtime();
@@ -77,4 +80,20 @@ test("the anonymized state keeps shape, numbers and the schema's own values, and
   expect(back.saved_at).toBeUndefined();
   expect(back.agent_commands).toBeUndefined();
   expect(back.panes[0].dormant).toBeUndefined();
+});
+test.each([false, true])("provider payloads are private in reports, live=%s", live => {
+  using r = new Runtime();
+  const client = new Claude(new Stdio(), null, true),
+    session = new Session(1, "claude", "/tmp", client);
+  client.inputs.set("private-request", { customer_account: 123456789, acme_merger: true });
+  session.events.push({ seq: 7n, event: { kind: "message", session: "private-session", text: "private-message" } });
+  r.sessions.push(session);
+  const out = check.describe(cp.capture(r, live)).anonymized;
+  for (const secret of ["customer_account", "123456789", "acme_merger", "private-"]) expect(out).not.toContain(secret);
+  const back = json.parse(out).sessions[0];
+  expect(back.id).toBe(1);
+  expect(back.provider).toBe("claude");
+  expect(back.client.state).toMatch(/^<payload \d+>$/);
+  expect(back.events[0].seq).toBe(7);
+  expect(back.events[0].event).toMatch(/^<payload \d+>$/);
 });

@@ -58,7 +58,7 @@ export function attachment(e: Event, f: Failure, space?: number): string {
         ...what,
         ...(f.state.repairs.length ? { repairs: f.state.repairs } : {}),
         anonymized:
-          "private text is a token, the same wherever the same value appears; fields at their default and launcher settings are left out; times are seconds before the save",
+          "private text and untyped provider payloads are tokens, the same wherever the same value appears; fields at their default and launcher settings are left out; times are seconds before the save",
       },
       checkpoint,
     },

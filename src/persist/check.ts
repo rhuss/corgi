@@ -20,7 +20,7 @@ export type State = {
   repairs: string[];
   /** The last changes to what panes and sessions showed, oldest first, timed from the save. */
   recent: string[];
-  /** The checkpoint as saved, with every string the schema doesn't name a value of replaced. */
+  /** The checkpoint with private text and untyped provider payloads replaced. */
   anonymized: string;
 };
 export type Result =
@@ -168,6 +168,16 @@ const texts: ReadonlySet<string> = new Set(
     .split("\n")
     .flatMap(line => /\.([a-z_]+)[^.]*: (?:string|custom bounded_text\.\w+\(\d+\))$/.exec(line)?.[1] ?? []),
 );
+/** Untyped provider state and events can hold private keys and numeric values too. */
+const payloads: ReadonlySet<string> = new Set(
+  schema
+    .trim()
+    .split("\n")
+    .flatMap(line => {
+      const [path, type] = line.split(": ");
+      return type === "any" ? [path.replace(/\?/g, "").replace(/\[\d+\]/g, "[]")] : [];
+    }),
+);
 /** Settings, not the session: what launches, labels and accounts look like. */
 const settings = new Set([
   "agent_commands",
@@ -194,6 +204,7 @@ const timed = (key: string) => /^at$|_at$|since$/.test(key);
 /** The checkpoint `state` as an issue can show it:
  * - a string the schema doesn't list for its field becomes a token, the same
  *   one wherever the same value appears: "<session 1>", "<text 3, 11 chars>";
+ * - untyped provider payloads become opaque tokens;
  * - a field holding its default (0, "", false, null, nothing) is left out;
  * - a time becomes seconds before the save, whatever unit it was saved in;
  * - settings are left out, and a list of one thing repeated says so once.
@@ -202,9 +213,8 @@ export function anonymize(state: any): unknown {
   const tokens = new Map<string, string>(),
     counts = new Map<string, number>(),
     saved = Number(state?.saved_at) || 0;
-  const token = (key: string, value: string | unknown[]) => {
-    const kind = kinds[key] ?? "text",
-      id = `${kind}\0${json.stringify(value)}`;
+  const token = (key: string, value: string | unknown[], kind = kinds[key] ?? "text") => {
+    const id = `${kind}\0${json.stringify(value)}`;
     let t = tokens.get(id);
     if (!t) {
       const n = (counts.get(kind) ?? 0) + 1;
@@ -228,13 +238,14 @@ export function anonymize(state: any): unknown {
     v === undefined ||
     (Array.isArray(v) && !v.length) ||
     (!!v && typeof v === "object" && !Array.isArray(v) && !Object.keys(v).length);
-  const walk = (value: unknown, key: string): unknown => {
+  const walk = (value: unknown, key: string, path: string): unknown => {
+    if (payloads.has(path)) return empty(value) ? null : token(key, json.stringify(value), "payload");
     if (typeof value === "bigint") value = Number(value);
     if (typeof value === "string") return value === "" || kept.get(key)?.has(value) ? value : token(key, value);
     if (typeof value === "number") return saved && timed(key) && value > 1e8 ? before(value) : value;
     if (Array.isArray(value)) {
       if (texts.has(key) && value.length && value.every(x => typeof x === "number")) return token(key, value);
-      const items = value.map(item => walk(item, key)),
+      const items = value.map(item => walk(item, key, `${path}[]`)),
         first = items.length > 2 ? json.stringify(items[0]) : null;
       // Unused slots and default entries say the same thing many times, or nothing.
       if (first === null || !items.every(item => json.stringify(item) === first)) return items;
@@ -245,13 +256,13 @@ export function anonymize(state: any): unknown {
         Object.entries(value).flatMap(([k, v], i) => {
           if (key === "" && (settings.has(k) || k === "saved_at")) return [];
           const field = /^[a-z_][a-z0-9_]{0,40}$/.test(k) ? k : `<key ${i}>`,
-            out = walk(v, field);
+            out = walk(v, field, `${path}.${k}`);
           return empty(out) ? [] : [[field, out]];
         }),
       );
     return value;
   };
-  return walk(state, "");
+  return walk(state, "", "$");
 }
 /** A number or a short plain name; anything else could carry a path or a session. */
 function word(value: unknown): string {
