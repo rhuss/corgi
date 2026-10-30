@@ -125,7 +125,13 @@ test("a release only passes the pre-update check with a result, or without the c
     run = (target: string, limit_ms?: number) => check(join(dir, "none.sock"), target, null, limit_ms);
   try {
     expect(await run(script("passes", `echo '{"ok":true}'`))).toBeNull();
-    expect(await run(script("older", "echo 'corgi: UnknownCommand' >&2; exit 1"))).toBeNull();
+    expect(await run(script("legacy-error", "echo 'corgi: UnknownCommand' >&2; exit 1"))).toBeNull();
+    expect(
+      await run(script("older", "echo 'corgi: unknown command __update-check; see corgi --help' >&2; exit 2")),
+    ).toBeNull();
+    expect(
+      await run(script("other-command", "echo 'corgi: unknown command other; see corgi --help' >&2; exit 2")),
+    ).not.toBeNull();
     const failed = await run(
       script("fails", `echo '{"ok":false,"error":"InvalidCheckpoint","why":"pane 9 pointed at conversation 3"}'`),
     );

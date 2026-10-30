@@ -363,7 +363,12 @@ export async function check(
     } catch {}
     if (result?.ok === true && code === 0) return null;
     if (result?.ok === false) return report.failure(result);
-    if (code !== 0 && /UnknownCommand/.test(err)) return null;
+    // Releases without this command report it only through stderr.
+    if (
+      code !== 0 &&
+      /^(?:corgi: UnknownCommand|corgi: unknown command __update-check; see corgi --help)\r?$/m.test(err)
+    )
+      return null;
     return report.failure({
       error: "CheckFailed",
       why:
