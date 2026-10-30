@@ -4313,6 +4313,8 @@ export class Controller {
       }
       if (cl.paste === null) {
         const key_event = keyboard.decode(latin1(seq));
+        // Keys sent as sequences skip `key`, but they too let go of a held ↵.
+        if (key_event && viewerNative.encodeKey(null, key_event) !== "\r") this.held_enter = null;
         if (key_event && this.signin) {
           // Its agent gets keys as its terminal asked for them; the frame reads them plain.
           const s = this.signin,
