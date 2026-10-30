@@ -67,8 +67,10 @@ merge() {
   entries | while read -r branch pr repo _; do
     pr=${pr#\#}
     if [ -z "$repo" ]; then repo=$UPSTREAM_REPO; fi
-    label=$pr
-    if [ -n "$pr" ] && [ "$repo" != "$UPSTREAM_REPO" ]; then label="$repo#$pr"; fi
+    label=""
+    if [ -n "$pr" ]; then
+      if [ "$repo" = "$UPSTREAM_REPO" ]; then label="#$pr"; else label="$repo#$pr"; fi
+    fi
     if [ -n "$pr" ]; then
       state=$(gh pr view "$pr" --repo "$repo" --json state -q .state 2>/dev/null || echo UNKNOWN)
       if [ "$state" = MERGED ]; then
