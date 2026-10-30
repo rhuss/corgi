@@ -81,6 +81,7 @@ import { Preferences } from "./preferences";
 import { Drag as AgentDrag } from "./agent_drag";
 import { Drag as WorkspaceDrag } from "./workspace_drag";
 import { milliTimestamp, microTimestamp } from "./clock";
+import type { KeyHold } from "./key_hold";
 import * as ghosttyIntegration from "./ghostty_integration";
 import * as hostClipboard from "./host_clipboard";
 import type { Pacer } from "./frame_pacing";
@@ -250,6 +251,8 @@ export class Controller {
   prefix = false;
   /** Until when a repeatable prefixed key, pressed again, runs without the prefix. */
   repeat_until = 0;
+  /** The ↵ held to create a workspace, still down: its repeats go nowhere until it is let go. */
+  private held_enter: KeyHold | null = null;
   keyboard: Keyboard = "pane";
   /** The sidebar's keyboard cursor, while the sidebar has the keyboard. */
   get sidebar_focus(): sidebarFocus.State | null {
@@ -1628,10 +1631,16 @@ export class Controller {
         if (target.workspace_name === null) {
           const cwd = fresh ? fresh.confirm() : this.currentCwd();
           if (cwd === null) return;
+          const held = fresh !== null && fresh.create.quieted(milliTimestamp());
           try {
             await this.newWorkspace(name, cwd);
           } catch {
             this.notice(" Could not create workspace");
+          }
+          // Repeats queued while the shell started come next; the hold outlives the dialog.
+          if (held) {
+            fresh.create.quiet(milliTimestamp());
+            this.held_enter = fresh.create;
           }
           return;
         }
@@ -3526,6 +3535,7 @@ export class Controller {
     this.endSigninExit();
     const cl = this.input_state;
     this.repeat_until = 0;
+    if (this.heldEnter(byte)) return;
     // A sign-in has the keyboard; what its agent is sent passes through it.
     if (this.signin) {
       if (await this.signinPrefix(byte, null)) return;
@@ -3988,6 +3998,17 @@ export class Controller {
       // Ctrl+V asks an agent to paste an image from its own machine.
       if (byte === 22 && p.agent.provider !== null) this.imageHint("ctrl");
     }
+  }
+  /** Whether `byte` is a repeat of the ↵ held to create a workspace; any
+   * other key, or a gap in the repeats, ends the hold. */
+  private heldEnter(byte: number, now = milliTimestamp()): boolean {
+    const hold = this.held_enter;
+    if (byte === 13 && hold?.quieted(now)) {
+      hold.quiet(now);
+      return true;
+    }
+    this.held_enter = null;
+    return false;
   }
   /** The keyboard's owner when a paste begins, in `key`'s order. */
   private pasteTarget(): Paste {
