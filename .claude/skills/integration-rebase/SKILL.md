@@ -17,6 +17,7 @@ The manifest and the record of what is and was integrated. `rebuild.sh` reads on
 - **Active** columns: Branch (in backticks), PR, Issues, Description, Added (YYYY-MM-DD).
 - **Retired** columns: the same plus Retired (YYYY-MM-DD) and Reason (`merged upstream as <short sha>`, or the user's reason for dropping it).
 - Links are full Markdown links: PR `[#N](https://github.com/tals/corgi/pull/N)`, issue `[#N](https://github.com/tals/corgi/issues/N)`. Several issues are separated by spaces. No `|` inside cells.
+- A PR on another repo (e.g. a preview PR on the `rhuss/corgi` fork) links to that repo's pull URL, e.g. `[#1](https://github.com/rhuss/corgi/pull/1)`. `rebuild.sh` takes the repo from the URL; a merged PR only skips its branch when that repo is `tals/corgi`.
 - The PR and Issues cells may be empty for a branch without a PR yet.
 
 Rules:
@@ -29,7 +30,7 @@ Rules:
 - none: rebuild.
 - `--push`: rebuild, then `git push --force-with-lease origin integration`.
 - `add <branch> [#PR] [description]`: append a row to the Active table, then commit it as `integration: add <branch>` and rebuild.
-  - With a PR: take the issues from `gh pr view N --repo tals/corgi --json title,closingIssuesReferences,body` (closing issues plus `#N` references in the body that are issues), and the description from the argument or else the PR title without its `area:` prefix.
+  - With a PR: take the issues from `gh pr view N --repo tals/corgi --json title,closingIssuesReferences,body` (closing issues plus `#N` references in the body that are issues), and the description from the argument or else the PR title without its `area:` prefix. A PR may also be given as a full URL to another repo (e.g. a fork preview PR); query it on that repo and link it as above.
   - Without a PR: ask the user for a one-line description and any related issues.
   - Added is today's date.
 - `remove <branch> [reason]`: move its row from Active to Retired with today's date and the reason (ask if none was given), commit it as `integration: remove <branch>`, then rebuild.

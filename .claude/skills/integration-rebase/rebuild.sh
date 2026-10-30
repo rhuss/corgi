@@ -17,14 +17,22 @@ manifest=INTEGRATION.md
 say() { printf 'integration: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
 
-# "<branch> [<PR number>]" for each row of the "## Active" table in INTEGRATION.md.
+# "<branch> [<PR number>] [<owner/repo>]" for each row of the "## Active" table in INTEGRATION.md.
+# The PR cell may link to any GitHub repo; the repo is taken from the pull URL
+# (tals/corgi when only a bare #N is given).
 entries() {
   awk -F'|' '
     /^## / { active = ($0 ~ /^## Active/) }
     active && /^\| *`/ {
       branch = $2; gsub(/[ `]/, "", branch)
-      pr = ""; if (match($3, /#[0-9]+/)) pr = substr($3, RSTART + 1, RLENGTH - 1)
-      print branch, pr
+      pr = ""; repo = ""
+      if (match($3, /github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[0-9]+/)) {
+        url = substr($3, RSTART, RLENGTH); split(url, u, "/")
+        repo = u[2] "/" u[3]; pr = u[5]
+      } else if (match($3, /#[0-9]+/)) {
+        pr = substr($3, RSTART + 1, RLENGTH - 1)
+      }
+      print branch, pr, repo
     }' "$manifest"
 }
 
@@ -56,13 +64,20 @@ merge() {
   require_branch
   [ ! -f "$(git rev-parse --git-path MERGE_HEAD)" ] || die "a merge is in progress; resolve and commit it first"
   require_clean
-  entries | while read -r branch pr _; do
+  entries | while read -r branch pr repo _; do
     pr=${pr#\#}
+    if [ -z "$repo" ]; then repo=$UPSTREAM_REPO; fi
+    label=$pr
+    if [ -n "$pr" ] && [ "$repo" != "$UPSTREAM_REPO" ]; then label="$repo#$pr"; fi
     if [ -n "$pr" ]; then
-      state=$(gh pr view "$pr" --repo "$UPSTREAM_REPO" --json state -q .state 2>/dev/null || echo UNKNOWN)
+      state=$(gh pr view "$pr" --repo "$repo" --json state -q .state 2>/dev/null || echo UNKNOWN)
       if [ "$state" = MERGED ]; then
-        say "skip $branch: #$pr is merged upstream (drop it from the manifest)"
-        continue
+        if [ "$repo" = "$UPSTREAM_REPO" ]; then
+          say "skip $branch: #$pr is merged upstream (drop it from the manifest)"
+          continue
+        else
+          say "note $branch: $repo#$pr is merged, but not into $UPSTREAM_REPO; merging the branch anyway"
+        fi
       fi
     fi
     if git rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
@@ -88,7 +103,7 @@ merge() {
       say "ok   $branch: already merged"
       continue
     fi
-    if git merge --no-ff --no-edit -m "integration: merge $branch${pr:+ (#$pr)}" "$ref" >/dev/null 2>&1; then
+    if git merge --no-ff --no-edit -m "integration: merge $branch${label:+ ($label)}" "$ref" >/dev/null 2>&1; then
       say "ok   $branch: merged"
     elif [ -z "$(git diff --name-only --diff-filter=U)" ]; then
       # rerere resolved every conflict and staged the result
