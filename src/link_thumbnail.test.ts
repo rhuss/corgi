@@ -3,8 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { png_base64 } from "./assets/corgi_badge";
+import { blink } from "./gif.test";
 import { Rect } from "./layout";
-import { Loader, imagePath, place, remove } from "./link_thumbnail";
+import { Loader, bases, imagePath, place, remove } from "./link_thumbnail";
+import { fit } from "./link_tooltip";
 
 const cell = { width: 10, height: 20 };
 
@@ -29,6 +31,33 @@ test("a thumbnail is centered in its cells", () => {
   );
 });
 
+test("a thumbnail too big for the screen is scaled down by the host, and kept", async () => {
+  const t = { width: 400, height: 480, cell };
+  // Room below the link for it whole.
+  expect(fit(100, 40, { x: 0, y: 2 }, t)).toBe(t);
+  // In the middle, it shrinks to fit above the link: 26 rows less a border, copy row and rule.
+  const shrunk = fit(100, 40, { x: 0, y: 26 }, t)!;
+  expect(shrunk).toEqual({ width: 370, height: 440, cell, of: t });
+  expect(place(new Rect(0, 1, 39, 26), shrunk)).toContain(",c=37,r=22,");
+  expect(fit(100, 6, { x: 0, y: 3 }, t)).toBeNull();
+
+  const dir = mkdtempSync(join(tmpdir(), "corgi-thumb-"));
+  try {
+    writeFileSync(
+      join(dir, "a.png"),
+      await new Bun.Image(Buffer.from(png_base64, "base64")).resize(400, 480).png().buffer(),
+    );
+    const loader = new Loader(() => {});
+    loader.get(`file://${join(dir, "a.png")}`, cell);
+    await loader.loading;
+    const loaded = loader.get(`file://${join(dir, "a.png")}`, cell)!;
+    expect(loader.sync(fit(100, 40, { x: 0, y: 26 }, loaded))).toStartWith("\x1b_Ga=t,");
+    expect(loader.sync(loaded)).toBe("");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("the loader shrinks the hovered image, sends it once, and frees it", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-thumb-"));
   try {
@@ -43,8 +72,8 @@ test("the loader shrinks the hovered image, sends it once, and frees it", async 
     expect(loader.get(uri("tall.png"), cell)).toBeNull();
     await loader.loading;
     const tall = loader.get(uri("tall.png"), cell)!;
-    // Ten rows tall at most, keeping the aspect.
-    expect(tall).toMatchObject({ width: 67, height: 200 });
+    // 24 rows tall at most, keeping the aspect.
+    expect(tall).toMatchObject({ width: 160, height: 480 });
     expect(wakes).toBe(1);
     expect(loader.sync(tall)).toStartWith("\x1b_Ga=t,t=d,f=100,i=730140,q=2,m=");
     expect(loader.sync(tall)).toBe("");
@@ -68,4 +97,43 @@ test("the loader shrinks the hovered image, sends it once, and frees it", async 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("an animated GIF is sent as a Kitty animation that loops", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-thumb-"));
+  try {
+    writeFileSync(join(dir, "blink.gif"), blink);
+    const loader = new Loader(() => {});
+    const uri = `file://${join(dir, "blink.gif")}`;
+    loader.get(uri, cell);
+    await loader.loading;
+    const shown = loader.get(uri, cell)!;
+    expect(shown).toMatchObject({ width: 20, height: 10 });
+    const sent = loader.sync(shown);
+    expect(sent).toStartWith("\x1b_Ga=t,t=d,f=100,i=730140,q=2,m=0;");
+    expect(sent).toContain("\x1b_Ga=f,t=d,f=100,i=730140,x=12,y=2,c=1,z=100,q=2,m=0;");
+    expect(sent).toEndWith("\x1b_Ga=a,i=730140,r=1,z=200,q=2\x1b\\\x1b_Ga=a,i=730140,s=3,v=1,q=2\x1b\\");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("each GIF frame is drawn over the picture its disposal leaves", () => {
+  const frame = (disposal: number, whole = false) => ({
+    still: new Uint8Array(),
+    left: whole ? 0 : 4,
+    top: whole ? 0 : 2,
+    width: whole ? 20 : 4,
+    height: whole ? 10 : 4,
+    delay: 100,
+    disposal,
+  });
+  const of = (...frames: ReturnType<typeof frame>[]) => bases({ width: 20, height: 10, frames });
+  // Kept frames build on the last; a restored one is undone, back to what it was drawn over.
+  expect(of(frame(1, true), frame(1), frame(3), frame(3), frame(0))).toEqual([1, 2, 2, 2]);
+  expect(of(frame(1, true), frame(0), frame(3), frame(1), frame(3), frame(1))).toEqual([1, 2, 2, 4, 4]);
+  // A cleared whole frame, or a part of a clear canvas, leaves it clear.
+  expect(of(frame(2, true), frame(2), frame(1))).toEqual([0, 0]);
+  // Clearing part of a picture can't be composed.
+  expect(of(frame(1, true), frame(2), frame(1))).toBeNull();
 });
