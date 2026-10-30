@@ -13,6 +13,7 @@ Keep `|` out of the cells.
 | `001-voice-dictation` | [#36](https://github.com/tals/corgi/pull/36) | | Dictate into the focused pane with a local Whisper model, locally or over SSH (`corgi voice --ssh HOST`) | 2026-10-28 |
 | `002-pane-click-selection` | [#43](https://github.com/tals/corgi/pull/43) | [#21](https://github.com/tals/corgi/issues/21) | Double-click copies a word, triple-click a line | 2026-10-28 |
 | `003-inline-sidebar-rename` | [#1](https://github.com/rhuss/corgi/pull/1) | [#42](https://github.com/tals/corgi/issues/42) | Rename workspace and agent rows in place | 2026-10-30 |
+| `fix/held-enter-new-workspace` | [#51](https://github.com/tals/corgi/pull/51) | | Keep the held ↵ out of the new shell when creating a workspace | 2026-10-30 |
 
 ## Retired
 
