@@ -305,19 +305,7 @@ async function voice(
   }
   let quit!: () => void;
   const stopped = new Promise<void>(resolve => (quit = resolve)),
-    finished: { path: string; late: number }[] = [];
-  let given_up = false;
-  // Quitting with a recording waits for its transcript; quitting again does not.
-  const quitting = () => {
-    if (view.finishing || (!recorder.current && !recorder.stopping.size)) return quit();
-    view.finishing = true;
-    void recorder.stop();
-    void Promise.all([...recorder.stopping].map(r => r.done)).then(results => {
-      // After a second quit, `finish` reported them.
-      if (!given_up) for (const r of results) if (r) finished.push(r);
-      quit();
-    });
-  };
+    quitting = quitter(recorder, () => view, quit);
   const view = new ui.VoiceUi(session, {
     target: host ?? "local",
     device: s.device ?? "(default)",
@@ -334,7 +322,7 @@ async function voice(
       logger.info("microphone switched", { device: device.id });
       mic?.switch(device.id);
     },
-    quit: quitting,
+    quit: quitting.press,
     recorder,
     tuning,
     folder,
@@ -345,14 +333,51 @@ async function voice(
     },
     stopRecording: () => void recorder.stop(),
   });
-  await ui.run(view, stopped, cleanup);
-  given_up = true;
-  finished.push(...recorder.finish());
+  // A signal ends voice mode at once; the transcript is closed first.
+  await ui.run(view, stopped, async () => {
+    recorder.finish();
+    await cleanup();
+  });
+  const finished = quitting.finish();
   await cleanup();
-  for (const { path, late } of finished)
-    if (late)
-      process.stderr.write(
-        `corgi: ${late} passage${late === 1 ? "" : "s"} of ${path} did not finish in time and ${late === 1 ? "is" : "are"} not in the transcript\n`,
-      );
+  for (const { path, late } of finished) if (late) process.stderr.write(lateMessage(path, late));
   return 0;
+}
+/** Quitting voice mode: with a recording, the first `press` stops it and waits
+ * for its transcript, with the window saying so, and a second press ends the
+ * wait. Once the window is gone, `finish` closes what is left and returns
+ * each recording closed on the way, with how many passages it left out. */
+export function quitter(
+  recorder: Recorder,
+  view: () => { finishing: boolean },
+  quit: () => void,
+): { press: () => void; finish: () => { path: string; late: number }[] } {
+  const finished: { path: string; late: number }[] = [];
+  let given_up = false;
+  return {
+    press: () => {
+      const v = view();
+      if (v.finishing || (!recorder.current && !recorder.stopping.size)) return quit();
+      v.finishing = true;
+      void recorder.stop();
+      void Promise.all([...recorder.stopping].map(r => r.done)).then(
+        results => {
+          // After a second press, `finish` reports them.
+          if (!given_up) for (const r of results) if (r) finished.push(r);
+          quit();
+        },
+        () => quit(),
+      );
+    },
+    finish: () => {
+      given_up = true;
+      finished.push(...recorder.finish());
+      return finished;
+    },
+  };
+}
+/** The line on the terminal for passages a recording left out on quit. */
+export function lateMessage(path: string, late: number): string {
+  const shown = path.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+  return `corgi: ${late} passage${late === 1 ? "" : "s"} of ${shown} did not finish in time and ${late === 1 ? "is" : "are"} not in the transcript\n`;
 }
