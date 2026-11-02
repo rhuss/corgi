@@ -153,8 +153,16 @@ export class Recorder {
     r.state = "closed";
     this.deps.log?.(`recording: stopped ${r.path} waited_ms=${Math.round(waited)} late=${late}`);
     if (!failed) {
-      r.file.close();
-      this.notice("info", `stopped: ${r.path}`);
+      try {
+        r.file.close();
+        this.notice("info", `stopped: ${r.path}`);
+      } catch (error) {
+        // What was written is synced already; the close itself failed.
+        const why = message(error);
+        this.error = why;
+        this.deps.log?.(`recording: close failed ${r.path}: ${why}`);
+        this.notice("error", `recording stopped: ${why}`);
+      }
       if (late) this.notice("error", `${late} passage${late === 1 ? "" : "s"} did not finish in time`);
     }
     this.changed();
@@ -192,6 +200,7 @@ export class Recorder {
         speech_start: u.speech_start,
         speech_end: u.speech_end,
         capped: u.capped,
+        continues: u.continues,
         dash: said.dash,
       });
       try {
@@ -232,7 +241,7 @@ export class Recorder {
       this.deps.tuning.end();
     }
     this.error = why;
-    this.deps.log?.(`recording: write failed ${why}`);
+    this.deps.log?.(`recording: write failed ${r.path}: ${why}`);
     this.notice("error", `recording stopped: ${why}`);
   }
 }
