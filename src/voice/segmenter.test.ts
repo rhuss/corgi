@@ -63,6 +63,7 @@ test("speech times leave out the pre-roll and the quiet after the speech", () =>
 test("a capped utterance carries on in the next one, without a gap", () => {
   const { segments } = feed(concat(silence(1), tone(35), silence(3)));
   expect(segments.map(s => s.capped)).toEqual([true, false]);
+  expect(segments.map(s => s.continues)).toEqual([false, true]);
   const [first, next] = segments;
   expect(first.speech_start).toBe(first.started_at + 300);
   // The cap cuts at 30 s including the pre-roll; the speech runs up to the cut.
@@ -76,11 +77,21 @@ test("the cap can be lowered, but not past 30 s", () => {
   const ten = feed(concat(tone(25), silence(3)), { cap: 10 }).segments;
   expect(ten.map(s => s.duration)).toEqual([10, 10, 5.3]);
   expect(ten.map(s => s.capped)).toEqual([true, true, false]);
+  expect(ten.map(s => s.continues)).toEqual([false, true, true]);
   expect(ten[1].speech_start).toBe(ten[0].speech_end);
   expect(ten[2].speech_start).toBe(ten[1].speech_end);
   expect(ten[2].speech_end - ten[0].speech_start).toBe(25_000);
   // Asked for more, it stays at the 30 s transcription window.
   expect(feed(concat(shapes.long(), silence(3)), { cap: 60 }).segments.map(s => s.duration)).toEqual([30, 5.3]);
+});
+
+test("speech after a cut whose quiet rest was dropped does not continue it", () => {
+  // Speech stops 0.1 s before the cut: the rest is too short and is dropped.
+  const { segments } = feed(concat(tone(9.9), silence(4), tone(1), silence(3)), { cap: 10, silence: 1 });
+  expect(segments.map(s => [s.capped, s.continues])).toEqual([
+    [true, false],
+    [false, false],
+  ]);
 });
 
 test("two bursts are two utterances", () => {

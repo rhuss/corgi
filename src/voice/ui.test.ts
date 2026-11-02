@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { Recorder } from "./recorder";
 import * as transcript from "./transcript";
-import type { Tuning } from "./tuning";
+import { Tuning } from "./tuning";
 
 /** The text a frame leaves on a `cols` × `rows` screen. */
 function screen(frame: string, cols: number, rows: number): string[] {
@@ -87,10 +87,11 @@ const said = (
   reason,
   timings: {},
   record: null,
-  type: true,
+  untyped: null,
   speech_start: 0,
   speech_end: 0,
   capped: false,
+  continues: false,
 });
 
 test("the screen shows the target, the meter and what happened", () => {
@@ -517,10 +518,10 @@ afterEach(() => {
   for (const d of folders.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 /** A voice window that records into a fresh folder, as main.ts wires it. */
-function recording(opts: Partial<Options> = {}) {
+function recording(opts: Partial<Options> = {}, real?: Tuning) {
   // Short enough for the 80-column frames these tests read.
   const folder = mkdtempSync("/tmp/corgi-ui-"),
-    tuning = { pause_break: 2, begin: () => {}, end: () => {} } as unknown as Tuning,
+    tuning = real ?? ({ pause_break: 2, begin: () => {}, end: () => {} } as unknown as Tuning),
     recorder = new Recorder({ tuning, now: () => 0 }),
     started: string[] = [];
   folders.push(folder);
@@ -589,6 +590,19 @@ test("Enter starts the recording; the mode row shows REC and the footer the keys
   // The keys after it keep their place whatever r says.
   expect(footer.indexOf(" R ")).toBe(screen(ui.draw(80, 20), 80, 20)[19].indexOf(" R "));
   expect(rows.join("\n")).toContain(`○ ${clock(0)} recording started: ${join(folder, "call.txt")}`);
+});
+
+test("the prompt takes a name in UTF-8, as the terminal sends it", () => {
+  const { ui, folder, started } = recording();
+  ui.input("r");
+  // Keys reach the window as latin1 bytes; a character may span two reads.
+  const bytes = Buffer.from("café-日本.txt", "utf8").toString("latin1");
+  ui.input(bytes.slice(0, 4));
+  ui.input(bytes.slice(4));
+  expect(ui.prompt?.name).toBe("café-日本.txt");
+  expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain(join(folder, "café-日本.txt"));
+  ui.input("\r");
+  expect(started).toEqual(["café-日本.txt"]);
 });
 
 test("the prompt says when the name is an existing file it appends to", () => {
@@ -800,6 +814,64 @@ test("the reading view follows new speech until scrolled up, and counts what cam
   ui.input("j");
   ui.input("\x1b[B");
   expect(ui.reading?.top).toBeNull();
+});
+
+test("each scroll key moves the reading view by its step", () => {
+  const { ui } = conversation(10);
+  ui.input("v");
+  // 10 blocks of two lines and 9 gaps: 29 lines, 9 shown, so 20 is the bottom.
+  ui.draw(80, 20);
+  const top = () => ui.reading?.top;
+  ui.input("g");
+  expect(top()).toBe(0);
+  const down: [string, number][] = [
+    ["j", 1],
+    ["\x1b[B", 2],
+    ["\x04", 7],
+    ["\x06", 16],
+  ];
+  for (const [key, to] of down) {
+    ui.input(key, 20);
+    expect(top()).toBe(to);
+  }
+  ui.input("\x1b[6~", 20);
+  expect(top()).toBeNull();
+  const up: [string, number][] = [
+    ["k", 19],
+    ["\x1b[A", 18],
+    ["\x15", 13],
+    ["\x02", 4],
+    ["\x1b[5~", 0],
+  ];
+  for (const [key, to] of up) {
+    ui.input(key, 20);
+    expect(top()).toBe(to);
+  }
+});
+
+test("the meter and Options show the recording's values while it runs", () => {
+  const target = { setThreshold: () => {}, setTiming: () => {}, setCap: () => {} },
+    tuning = new Tuning(target, {
+      dictation: { threshold: 44, silence: 2.5 },
+      recording: { threshold: 60, silence: 1, max_chunk: 10, pause_break: 2 },
+      shared: { burst: 0.1, pre_roll: 0.3, min_speech: 0.2 },
+    }),
+    { ui } = recording({ tuning, setThreshold: pct => tuning.setThreshold(pct) }, tuning);
+  let rows = screen(ui.draw(80, 20), 80, 20);
+  expect(rows[4]).toContain("T:44");
+  expect(rows[6]).toMatch(/silence +2\.5 s /);
+  ui.input("r");
+  ui.input("call.txt\r");
+  rows = screen(ui.draw(80, 20), 80, 20);
+  expect(rows[4]).toContain("T:60");
+  expect(rows[6]).toMatch(/silence +1 s /);
+  // + steps from the recording's threshold, and stays with the recording.
+  ui.input("+");
+  expect(screen(ui.draw(80, 20), 80, 20)[4]).toContain("T:62");
+  ui.input("R");
+  rows = screen(ui.draw(80, 20), 80, 20);
+  expect(rows[4]).toContain("T:44");
+  expect(rows[6]).toMatch(/silence +2\.5 s /);
 });
 
 test("stopping the recording closes the reading view", () => {

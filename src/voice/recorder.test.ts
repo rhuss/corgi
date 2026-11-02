@@ -29,7 +29,7 @@ function setup() {
 }
 let next_id = 1;
 /** A passage whose speech ran from `start` to `end` ms. */
-function passage(start: number, end: number, capped = false): Utterance {
+function passage(start: number, end: number, capped = false, continues = false): Utterance {
   return {
     id: next_id++,
     captured_at: start,
@@ -39,10 +39,11 @@ function passage(start: number, end: number, capped = false): Utterance {
     reason: null,
     timings: {},
     record: null,
-    type: true,
+    untyped: null,
     speech_start: start,
     speech_end: end,
     capped,
+    continues,
   };
 }
 
@@ -138,8 +139,22 @@ test("a write failure closes the recording and restores dictation timing", () =>
   expect(calls).toEqual(["begin", "end"]);
   expect(recorder.notices.at(-1)?.kind).toBe("error");
   expect(recorder.notices.at(-1)?.text).toStartWith("recording stopped: ");
-  expect(lines.at(-1)).toStartWith("recording: write failed ");
+  expect(lines.at(-1)).toStartWith(`recording: write failed ${path}: `);
   expect(lines.join("\n")).not.toContain("Lost words");
+});
+
+test("a close that fails is reported, and the stop still settles", async () => {
+  const { recorder, lines } = setup(),
+    path = join(folder(), "t.txt");
+  recorder.start(path);
+  recorder.current!.file.close = () => {
+    throw new Error("EIO: i/o error, close");
+  };
+  expect(await recorder.stop()).toEqual({ path, late: 0 });
+  expect(recorder.stopping.size).toBe(0);
+  expect(recorder.error).toBe("EIO: i/o error, close");
+  expect(recorder.notices.at(-1)).toMatchObject({ kind: "error", text: "recording stopped: EIO: i/o error, close" });
+  expect(lines.at(-1)).toBe(`recording: close failed ${path}: EIO: i/o error, close`);
 });
 
 test("a stopping recording keeps its passages after a new one starts", async () => {
