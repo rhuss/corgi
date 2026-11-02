@@ -10,10 +10,12 @@ import { bounded, type Seen, type VoiceLink } from "./link";
 import type { Segmenter, Segment } from "./segmenter";
 import type { Server } from "./whisper";
 import type { MicProblem } from "./capture";
+import type { Recorder, Recording } from "./recorder";
 
-/** "muted": dropped by a mute, on purpose; "discarded": dropped for `reason`. */
+/** "muted": dropped by a mute, on purpose; "discarded": dropped for `reason`;
+ * "recorded": written to a transcript but not typed, for `reason`. */
 export type UtteranceStatus =
-  "recording" | "transcribing" | "delivering" | "delivered" | "failed" | "muted" | "discarded" | "dropped";
+  "recording" | "transcribing" | "delivering" | "delivered" | "failed" | "muted" | "discarded" | "dropped" | "recorded";
 export type Utterance = {
   id: number;
   captured_at: number;
@@ -22,6 +24,14 @@ export type Utterance = {
   text: string | null;
   reason: string | null;
   timings: { transcribe_ms?: number; deliver_ms?: number };
+  /** The transcript recording this passage goes to, decided when its speech ended. */
+  record: Recording | null;
+  /** Whether it may still be typed. */
+  type: boolean;
+  /** When its loud audio began and ended, and whether the cap cut it. */
+  speech_start: number;
+  speech_end: number;
+  capped: boolean;
 };
 export type LinkState = "connecting" | "connected" | "lost" | "refused" | "closed";
 export type Unavailable = MicProblem | "server_down";
@@ -100,6 +110,8 @@ export class VoiceSession {
       /** The voice process's own pane, when it runs inside the target runtime. */
       pane?: number;
       log?: (line: string) => void;
+      /** Takes the passages of a transcript recording. */
+      recorder?: Recorder;
     },
   ) {
     deps.transcriber.on("crashed", () => this.crashed());
@@ -179,7 +191,16 @@ export class VoiceSession {
     this.level = level.rmsToPercent(level.rms(f));
     // Frames again after a microphone failure: it is back.
     if (this.mic) this.setAvailable(true, null);
-    if (this.muted || !this.available || !this.viewer) {
+    // A running recording keeps listening while muted or without a viewer.
+    if (!this.available || (!this.recordingRuns && (this.muted || !this.viewer))) {
+      // The recording paused or stopped in the middle of a muted passage.
+      if (this.current) {
+        this.deps.segmenter.abort();
+        this.current.status = this.muted ? "muted" : "discarded";
+        this.current.reason = this.muted ? null : "no viewer";
+        this.current = null;
+        this.changed();
+      }
       this.pause = 0;
       return;
     }
@@ -206,6 +227,11 @@ export class VoiceSession {
       text: null,
       reason: null,
       timings: {},
+      record: null,
+      type: true,
+      speech_start: 0,
+      speech_end: 0,
+      capped: false,
     };
     this.history.push(u);
     if (this.history.length > 500) this.history.splice(0, this.history.length - 500);
@@ -216,11 +242,40 @@ export class VoiceSession {
     this.current = null;
     u.captured_at = segment.started_at;
     u.duration = segment.duration;
-    // Speech this far behind Whisper or the runtime is not kept on top.
-    if (this.pending >= max_backlog) return this.finish(u, "failed", "backlog");
+    u.speech_start = segment.speech_start;
+    u.speech_end = segment.speech_end;
+    u.capped = segment.capped;
+    this.deps.recorder?.claim(u);
+    if (!u.record && (this.muted || !this.viewer))
+      return this.finish(u, this.muted ? "muted" : "discarded", this.muted ? null : "no viewer");
+    // A recorded passage is written whether or not it can be typed.
+    const untyped = this.muted
+      ? "muted"
+      : !this.viewer
+        ? "no viewer attached"
+        : this.link_state !== "connected"
+          ? "not connected"
+          : null;
+    if (u.record && untyped) this.untype(u, untyped);
+    // Speech this far behind Whisper or the runtime is not kept on top; a
+    // recorded passage is still written, only not typed.
+    if (this.pending >= max_backlog) {
+      if (!u.record) return this.finish(u, "failed", "backlog");
+      this.untype(u, "backlog");
+    }
     u.status = "transcribing";
     this.changed();
     this.transcriptions = this.transcriptions.then(() => this.transcribe(u, segment));
+  }
+  /** `u` is no longer typed, for `why`; the first reason stays. */
+  private untype(u: Utterance, why: string): void {
+    if (!u.type) return;
+    u.type = false;
+    u.reason = why;
+  }
+  /** A recording is running, so speech is heard even when it cannot be typed. */
+  private get recordingRuns(): boolean {
+    return this.deps.recorder?.current?.state === "running";
   }
   /** Utterances waiting for Whisper or for the runtime, each holding its audio or text. */
   private get pending(): number {
@@ -229,6 +284,14 @@ export class VoiceSession {
     return n;
   }
   private async transcribe(u: Utterance, segment: Segment): Promise<void> {
+    try {
+      await this.heard(u, segment);
+    } finally {
+      // Whatever ended it without a write, a stop need not wait for it.
+      this.deps.recorder?.release(u);
+    }
+  }
+  private async heard(u: Utterance, segment: Segment): Promise<void> {
     if (u.status !== "transcribing") return;
     const started = this.deps.now();
     let heard: string;
@@ -244,13 +307,16 @@ export class VoiceSession {
     const cleaned = text.clean(heard);
     if (cleaned === null) return this.finish(u, "dropped", heard.trim() ? "not speech" : "empty");
     u.text = cleaned;
+    if (u.record && !this.deps.recorder?.write(u, cleaned)) u.record = null;
     this.changed();
     this.deliveries = this.deliveries.then(() => this.deliver(u));
   }
   private async deliver(u: Utterance): Promise<void> {
     if (u.status !== "transcribing") return;
+    if (!u.type) return this.finish(u, ...this.untyped(u, u.reason ?? "muted"));
     const link = this.link;
-    if (!link || this.link_state !== "connected") return this.finish(u, "failed", "not connected");
+    if (!link || this.link_state !== "connected")
+      return this.finish(u, u.record ? "recorded" : "failed", "not connected");
     u.status = "delivering";
     this.changed();
     const started = this.deps.now();
@@ -260,12 +326,19 @@ export class VoiceSession {
       this.finish(u, "delivered", null);
     } catch (error) {
       u.timings.deliver_ms = this.deps.now() - started;
+      // Written to the transcript, so it is kept as recorded, with why it was not typed.
+      if (u.record) this.finish(u, "recorded", errors.name(error) === "VoiceMuted" ? "muted" : reason(error));
       // Muted from a viewer before this arrived: dropped, as a mute here drops it.
-      if (errors.name(error) === "VoiceMuted") this.finish(u, "muted", null);
+      else if (errors.name(error) === "VoiceMuted") this.finish(u, "muted", null);
       // The text was sent; only the answer is missing, so it may still arrive.
       else if (errors.is(error, "Timeout")) this.finish(u, "failed", "no answer in time; may have been typed");
       else this.finish(u, "failed", reason(error));
     }
+  }
+  /** How a passage that is not typed ends: recorded when it was written. */
+  private untyped(u: Utterance, why: string): [UtteranceStatus, string | null] {
+    if (u.record) return ["recorded", why];
+    return why === "muted" ? ["muted", null] : ["discarded", why];
   }
   private finish(u: Utterance, status: UtteranceStatus, why: string | null): void {
     u.status = status;
@@ -313,13 +386,13 @@ export class VoiceSession {
   private applyMuted(muted: boolean): void {
     if (this.muted === muted) return;
     this.muted = muted;
-    if (muted) this.discard("muted", null);
+    if (muted) this.discard("muted", null, "muted");
     this.changed();
   }
   /** A viewer attached or went away; what is said meanwhile has nowhere to go. */
   private applyViewer(state: Seen): void {
     if (this.viewer === state.viewer && this.focus === state.focus) return;
-    if (this.viewer && !state.viewer) this.discard("discarded", "no viewer");
+    if (this.viewer && !state.viewer) this.discard("discarded", "no viewer", "no viewer attached");
     this.viewer = state.viewer;
     this.focus = state.focus;
     this.changed();
@@ -331,11 +404,18 @@ export class VoiceSession {
   get transcribing(): boolean {
     return this.history.some(u => u.status === "transcribing");
   }
-  private discard(status: "muted" | "discarded", why: string | null): void {
-    this.deps.segmenter.abort();
-    this.current = null;
+  /** Drops what was not yet typed. A passage for a transcript is still
+   * written, only not typed (for `untyped`); while a recording runs, the
+   * passage in progress goes on, to be written when it ends. */
+  private discard(status: "muted" | "discarded", why: string | null, untyped: string): void {
+    const listening = this.recordingRuns;
+    if (!listening) {
+      this.deps.segmenter.abort();
+      this.current = null;
+    } else if (this.current) this.untype(this.current, untyped);
     for (const u of this.history)
-      if (u.status === "recording" || u.status === "transcribing") {
+      if (u.record && (u.status === "transcribing" || u.status === "delivering")) this.untype(u, untyped);
+      else if (u.status === "transcribing" || (u.status === "recording" && !listening)) {
         u.status = status;
         u.reason = why;
       }
@@ -366,6 +446,7 @@ export class VoiceSession {
       if ((u.status === "transcribing" && u.text === null) || u.status === "recording") {
         u.status = "failed";
         u.reason = "server crashed";
+        this.deps.recorder?.release(u);
       }
     this.availability(was);
   }
