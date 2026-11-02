@@ -1,6 +1,5 @@
 //! Voice mode's screen: where dictation goes, the microphone level against
 //! the threshold, what was heard and what became of it, and the keys.
-import { homedir } from "node:os";
 import * as palette from "../palette";
 import { Style } from "../palette";
 import * as level from "./level";
@@ -16,8 +15,6 @@ import type { Timing } from "./segmenter";
 import type { Recorder } from "./recorder";
 import type { Tuning } from "./tuning";
 import { Reading, clock, wrap } from "./reading";
-
-export { clock };
 
 const reset = "\x1b[0m",
   meter_cells = 20,
@@ -176,11 +173,10 @@ export type Options = {
   recorder?: Recorder;
   /** The values in effect, read for drawing instead of `threshold` and `timing`. */
   tuning?: Tuning;
-  /** Where relative transcript names go, and what `~/` stands for. */
-  folder?: string;
-  home?: string;
-  /** Starts recording into the file a typed name stands for. */
-  startRecording?: (name: string) => { path: string } | { error: string };
+  /** The file a typed transcript name stands for, or why it is refused. */
+  resolveName?: (name: string) => { path: string } | { error: string };
+  /** Starts recording into a resolved file. */
+  startRecording?: (path: string) => { path: string } | { error: string };
   stopRecording?: () => void;
 };
 /** The filename prompt: the name as typed; `fresh` while it is still the
@@ -304,7 +300,12 @@ function describe(u: Utterance): { glyph: string; style: string; label: string }
     case "discarded":
       return { glyph: "○", style: quiet, label: `discarded (${u.reason})` };
     case "recorded":
-      return { glyph: "●", style: muted, label: `${said} · recorded, not typed (${u.reason})` };
+      // Written; typed or not, unless the typing got no answer and may have been.
+      return {
+        glyph: "●",
+        style: muted,
+        label: `${said} · ${u.maybe_typed ? "recorded" : "recorded, not typed"} (${u.reason})`,
+      };
     // Muting drops what was said on purpose; it needs no row.
     case "muted":
     case "dropped":
@@ -512,7 +513,7 @@ export class VoiceUi {
       // Padded to "unmute", so the keys after it never shift.
       ["m", (s.muted ? "unmute" : "mute").padEnd(6)],
       ["q", "quit"],
-      ...(this.opts.recorder
+      ...(this.opts.recorder && (recording || this.canStart)
         ? [["r", recording === "running" ? "pause " : recording === "paused" ? "resume" : "record"]]
         : []),
       ...(recording ? [["R", "stop"]] : []),
@@ -549,7 +550,7 @@ export class VoiceUi {
   }
   /** What a typed transcript name stands for. */
   private resolveName(name: string): { path: string } | { error: string } {
-    return transcript.resolve(name, this.opts.folder ?? "", this.opts.home ?? homedir());
+    return this.opts.resolveName?.(name) ?? { error: "recording is not available" };
   }
   private drawPrompt(cols: number, rows: number, at: (y: number, x: number) => string): string {
     const p = this.prompt!,
@@ -596,12 +597,14 @@ export class VoiceUi {
       case "cancel":
         this.prompt = null;
         return this.opts.quit();
-      case "enter":
-        if ("error" in this.resolveName(p.name)) return;
+      case "enter": {
+        const where = this.resolveName(p.name);
+        if ("error" in where) return;
         this.prompt = null;
         // An open error shows in the status line and the history.
-        this.opts.startRecording?.(p.name);
+        this.opts.startRecording?.(where.path);
         return;
+      }
       case "backspace":
         return edit([...p.name].slice(0, -1).join(""));
       case "ctrl":
@@ -618,15 +621,20 @@ export class VoiceUi {
   private record(): void {
     const recorder = this.opts.recorder;
     // Quitting is finishing the transcript; nothing new starts.
-    if (!recorder || !this.opts.startRecording || this.finishing) return;
+    if (!recorder || this.finishing) return;
     switch (recorder.current?.state) {
       case "running":
         return recorder.pause();
       case "paused":
         return recorder.resume();
       default:
+        if (!this.canStart) return;
         this.prompt = { name: transcript.defaultName(new Date()), fresh: true, decoder: new TextDecoder(), hint: null };
     }
+  }
+  /** A new recording needs a name resolved and a way to start it. */
+  private get canStart(): boolean {
+    return !!(this.opts.resolveName && this.opts.startRecording);
   }
   private drawHelp(cols: number, rows: number, at: (y: number, x: number) => string): string {
     const width = Math.min(cols - 4, 78),
@@ -877,7 +885,8 @@ export class VoiceUi {
     this.filter = await this.opts.toggleFilter();
   }
   private nudge(dir: 1 | -1): void {
-    this.threshold = level.step(this.threshold, dir);
+    // The value in effect now: a recording may have started or stopped since the last frame.
+    this.threshold = level.step(this.opts.tuning?.threshold ?? this.threshold, dir);
     this.opts.setThreshold(this.threshold);
   }
   private openPicker(): void {

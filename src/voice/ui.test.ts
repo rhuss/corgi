@@ -1,5 +1,6 @@
 import { test, expect, afterEach } from "bun:test";
-import { VoiceUi, problem, clock, type Options } from "./ui";
+import { VoiceUi, problem, type Options } from "./ui";
+import { clock } from "./reading";
 import { VoiceSession, type Utterance } from "./session";
 import { Segmenter, default_timing } from "./segmenter";
 import type { Device } from "./capture";
@@ -7,6 +8,7 @@ import * as palette from "../palette";
 import { Style } from "../palette";
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { Recorder } from "./recorder";
 import * as transcript from "./transcript";
 import { Tuning } from "./tuning";
@@ -88,9 +90,10 @@ const said = (
   timings: {},
   record: null,
   untyped: null,
+  maybe_typed: false,
   speech_start: 0,
   speech_end: 0,
-  capped: false,
+  cut_at: null,
   continues: false,
 });
 
@@ -513,27 +516,28 @@ test("m mutes and q or ctrl+c quits", () => {
   expect(calls.quit).toBe(2);
 });
 
-const folders: string[] = [];
+const folders: string[] = [],
+  recorders: Recorder[] = [];
 afterEach(() => {
+  // Close every transcript a test left open before its folder goes.
+  for (const r of recorders.splice(0)) r.finish();
   for (const d of folders.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 /** A voice window that records into a fresh folder, as main.ts wires it. */
 function recording(opts: Partial<Options> = {}, real?: Tuning) {
-  // Short enough for the 80-column frames these tests read.
-  const folder = mkdtempSync("/tmp/corgi-ui-"),
+  const folder = mkdtempSync(join(tmpdir(), "corgi-ui-")),
     tuning = real ?? ({ pause_break: 2, begin: () => {}, end: () => {} } as unknown as Tuning),
     recorder = new Recorder({ tuning, now: () => 0 }),
     started: string[] = [];
   folders.push(folder);
+  recorders.push(recorder);
   let stops = 0;
   const made = setup({
     recorder,
-    folder,
-    home: "/home/me",
-    startRecording: name => {
-      started.push(name);
-      const where = transcript.resolve(name, folder, "/home/me");
-      return "error" in where ? where : recorder.start(where.path);
+    resolveName: name => transcript.resolve(name, folder, "/home/me"),
+    startRecording: path => {
+      started.push(path);
+      return recorder.start(path);
     },
     stopRecording: () => {
       stops++;
@@ -544,13 +548,23 @@ function recording(opts: Partial<Options> = {}, real?: Tuning) {
   return { ...made, recorder, folder, started, stops: () => stops };
 }
 
+/** The line under the prompt's name, before a frame cuts it to fit: temp
+ * folders can be longer than the prompt is wide. */
+function hint(ui: VoiceUi): string | undefined {
+  ui.draw(80, 20);
+  return ui.prompt?.hint?.text;
+}
+/** The whole screen, wide enough for a temp folder's paths. */
+const wide = (ui: VoiceUi) => screen(ui.draw(200, 20), 200, 20).join("\n");
+
 test("r asks for a file name, suggesting one; typing replaces it", () => {
   const { ui, folder, started } = recording();
   ui.input("r");
   let rows = screen(ui.draw(80, 20), 80, 20).join("\n");
   expect(rows).toContain("╭─ Record a transcript");
   expect(rows).toMatch(/transcript-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.txt/);
-  expect(rows).toContain(join(folder, "transcript-"));
+  expect(hint(ui)).toStartWith(join(folder, "transcript-"));
+  expect(rows).toContain(folder.slice(0, 20));
   expect(rows).toContain("enter start  esc cancel");
   // The first character replaces the suggestion; Backspace and Ctrl+U edit.
   ui.input("standupX");
@@ -577,7 +591,7 @@ test("Enter starts the recording; the mode row shows REC and the footer the keys
   expect(footer).not.toContain(" R ");
   ui.input("r");
   ui.input("call.txt\r");
-  expect(started).toEqual(["call.txt"]);
+  expect(started).toEqual([join(folder, "call.txt")]);
   expect(ui.prompt).toBeNull();
   expect(recorder.current?.path).toBe(join(folder, "call.txt"));
   const frame = ui.draw(80, 20),
@@ -589,7 +603,7 @@ test("Enter starts the recording; the mode row shows REC and the footer the keys
   expect(footer).toContain(" R  stop");
   // The keys after it keep their place whatever r says.
   expect(footer.indexOf(" R ")).toBe(screen(ui.draw(80, 20), 80, 20)[19].indexOf(" R "));
-  expect(rows.join("\n")).toContain(`○ ${clock(0)} recording started: ${join(folder, "call.txt")}`);
+  expect(wide(ui)).toContain(`○ ${clock(0)} recording started: ${join(folder, "call.txt")}`);
 });
 
 test("the prompt takes a name in UTF-8, as the terminal sends it", () => {
@@ -600,9 +614,9 @@ test("the prompt takes a name in UTF-8, as the terminal sends it", () => {
   ui.input(bytes.slice(0, 4));
   ui.input(bytes.slice(4));
   expect(ui.prompt?.name).toBe("café-日本.txt");
-  expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain(join(folder, "café-日本.txt"));
+  expect(hint(ui)).toBe(join(folder, "café-日本.txt"));
   ui.input("\r");
-  expect(started).toEqual(["café-日本.txt"]);
+  expect(started).toEqual([join(folder, "café-日本.txt")]);
 });
 
 test("the prompt says when the name is an existing file it appends to", () => {
@@ -610,9 +624,8 @@ test("the prompt says when the name is an existing file it appends to", () => {
   writeFileSync(join(folder, "notes.txt"), "Earlier.\n");
   ui.input("r");
   ui.input("notes.txt");
-  expect(screen(ui.draw(100, 20), 100, 20).join("\n")).toContain(
-    `appends to the existing file: ${join(folder, "notes.txt")}`,
-  );
+  expect(hint(ui)).toBe(`appends to the existing file: ${join(folder, "notes.txt")}`);
+  expect(screen(ui.draw(100, 20), 100, 20).join("\n")).toContain("appends to the existing file: ");
   ui.input("\x1b");
   ui.input("r");
   ui.input("~/x.txt");
@@ -628,7 +641,7 @@ test("R stops the recording, and quitting from the prompt makes no file", async 
   expect(recorder.current).toBeNull();
   expect(screen(ui.draw(80, 20), 80, 20)[3]).not.toContain("REC");
   await Bun.sleep(0);
-  expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain(`stopped: ${join(folder, "a.txt")}`);
+  expect(wide(ui)).toContain(`stopped: ${join(folder, "a.txt")}`);
   ui.input("r");
   ui.input("b.txt");
   ui.input("\x03");
@@ -681,10 +694,18 @@ test("a passage written but not typed shows as recorded, with why", () => {
     at = clock(0);
   expect(rows).toContain(`● ${at} a call · recorded, not typed (muted)`);
   expect(rows).toContain(`● ${at} and more · recorded, not typed (no viewer attached)`);
+  // No answer to the typing: written, and perhaps typed, so it does not claim otherwise.
+  session.history = [
+    { ...said(3, "recorded", "slow", "no answer in time; may have been typed"), maybe_typed: true },
+    ...session.history,
+  ];
+  const slow = screen(ui.draw(100, 20), 100, 20).join("\n");
+  expect(slow).toContain(`● ${at} slow · recorded (no answer in time; may have been typed)`);
+  expect(slow).not.toContain("slow · recorded, not typed");
   expect(ui.draw(80, 20)).toContain(new Style({ fg: "muted", bg: "bg" }).sgr() + "a call · recorded");
   // Muted while recording: the note and the meter stay grey; REC says speech is still kept.
   session.muted = true;
-  const dir = mkdtempSync("/tmp/corgi-ui-");
+  const dir = mkdtempSync(join(tmpdir(), "corgi-ui-"));
   folders.push(dir);
   recorder.start(join(dir, "t.txt"));
   const frame = ui.draw(80, 20);
@@ -895,4 +916,33 @@ test("the help explains recording and its own timing", () => {
   expect(rows).toContain("record");
   expect(rows).toContain("R stops");
   expect(rows).toContain("max_chunk");
+});
+
+test("without a way to start one, r still pauses and resumes a recording but opens no prompt", () => {
+  const { ui, recorder, folder } = recording({ resolveName: undefined, startRecording: undefined });
+  expect(screen(ui.draw(80, 20), 80, 20)[19]).not.toContain(" r ");
+  ui.input("r");
+  expect(ui.prompt).toBeNull();
+  recorder.start(join(folder, "t.txt"));
+  ui.input("r");
+  expect(recorder.current?.state).toBe("paused");
+  expect(screen(ui.draw(80, 20), 80, 20)[19]).toContain(" r  resume");
+  ui.input("r");
+  expect(recorder.current?.state).toBe("running");
+});
+
+test("+ right after Enter steps from the recording's threshold, with no frame between", () => {
+  const target = { setThreshold: () => {}, setTiming: () => {}, setCap: () => {} },
+    tuning = new Tuning(target, {
+      dictation: { threshold: 44, silence: 2.5 },
+      recording: { threshold: 60, silence: 1, max_chunk: 10, pause_break: 2 },
+      shared: { burst: 0.1, pre_roll: 0.3, min_speech: 0.2 },
+    }),
+    { ui } = recording({ tuning, setThreshold: pct => tuning.setThreshold(pct) }, tuning);
+  ui.draw(80, 20);
+  ui.input("r");
+  ui.input("call.txt\r+");
+  expect(tuning.threshold).toBe(62);
+  ui.input("R+");
+  expect(tuning.threshold).toBe(46);
 });

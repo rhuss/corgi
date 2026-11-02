@@ -134,3 +134,29 @@ test("the settings object passed in is not changed", () => {
   tuning.setThreshold(60);
   expect(recording.threshold).toBeNull();
 });
+
+test("a silence changed while recording to pause_break or more says so", () => {
+  const warnings: string[] = [];
+  const tuning = new Tuning(target(), {
+    dictation: { threshold: 44, silence: 2.5 },
+    recording: { threshold: null, silence: 1, max_chunk: 10, pause_break: 2 },
+    shared: { burst: 0.1, pre_roll: 0.3, min_speech: 0.2 },
+    warn: text => warnings.push(text),
+  });
+  // Dictation's silence has nothing to do with contributions.
+  tuning.setTiming("silence", 3);
+  expect(warnings).toEqual([]);
+  tuning.begin();
+  tuning.setTiming("silence", 1.5);
+  expect(warnings).toEqual([]);
+  tuning.setTiming("silence", 2);
+  expect(warnings).toEqual([
+    'recording "pause_break" (2 s) is not longer than "silence" (2 s), so every passage starts a new contribution',
+  ]);
+  // Said once when it crosses, not again while it stays there.
+  tuning.setTiming("silence", 3);
+  expect(warnings).toHaveLength(1);
+  tuning.setTiming("silence", 1);
+  tuning.setTiming("silence", 2.5);
+  expect(warnings).toHaveLength(2);
+});

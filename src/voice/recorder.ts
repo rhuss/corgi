@@ -12,7 +12,8 @@ export type Recording = {
   /** The resolved file path. */
   path: string;
   state: RecordingState;
-  started_at: number;
+  /** When it was last paused (ms): speech that began earlier is not after the resume. */
+  paused_at: number;
   /** Contribution breaks, and the contributions the reading view shows. */
   turns: Turns;
   /** Passages claimed by this recording, not yet written or given up. */
@@ -44,15 +45,9 @@ export class Recorder {
   /** Why the last recording could not start or stopped writing. */
   error: string | null = null;
   notices: Notice[] = [];
-  private listeners: (() => void)[] = [];
   constructor(private deps: { tuning: Tuning; now: () => number; log?: (line: string) => void }) {}
-  on(_event: "change", fn: () => void): void {
-    this.listeners.push(fn);
-  }
-  private changed(): void {
-    for (const fn of this.listeners) fn();
-  }
-  private notice(kind: Notice["kind"], text: string): void {
+  /** Adds a line to the history. */
+  notice(kind: Notice["kind"], text: string): void {
     this.notices.push({ at: this.deps.now(), kind, text });
     if (this.notices.length > max_notices) this.notices.splice(0, this.notices.length - max_notices);
   }
@@ -69,13 +64,11 @@ export class Recorder {
     } catch (error) {
       return this.refuse(path, message(error));
     }
-    const turns = new Turns(this.deps.tuning.pause_break);
-    turns.reset();
     this.current = {
       path,
       state: "running",
-      started_at: this.deps.now(),
-      turns,
+      paused_at: 0,
+      turns: new Turns(this.deps.tuning.pause_break),
       pending: new Set(),
       drained: [],
       file,
@@ -87,33 +80,31 @@ export class Recorder {
     this.deps.tuning.begin();
     this.deps.log?.(`recording: started ${path}`);
     this.notice("info", `recording started: ${path}`);
-    this.changed();
     return { path };
   }
   private refuse(path: string, why: string): { error: string } {
     this.error = why;
     this.deps.log?.(`recording: cannot start ${path}: ${why}`);
     this.notice("error", `recording not started: ${why}`);
-    this.changed();
     return { error: why };
   }
   pause(): void {
     const r = this.current;
     if (r?.state !== "running") return;
     r.state = "paused";
+    r.paused_at = this.deps.now();
     this.deps.log?.(`recording: paused ${r.path}`);
     this.notice("info", "paused");
-    this.changed();
   }
-  /** Back into the same file; the next written passage starts a contribution. */
+  /** Back into the same file; the first passage spoken since the pause starts
+   * a contribution. */
   resume(): void {
     const r = this.current;
     if (r?.state !== "paused") return;
     r.state = "running";
-    r.turns.reset();
+    r.turns.breakAt(r.paused_at);
     this.deps.log?.(`recording: resumed ${r.path}`);
     this.notice("info", "resumed");
-    this.changed();
   }
   /** Stops the current recording at once and closes its file once its pending
    * passages are written, or after `timeoutMs`; `late` counts those left out.
@@ -126,7 +117,6 @@ export class Recorder {
     this.current = null;
     this.stopping.add(r);
     this.deps.tuning.end();
-    this.changed();
     r.done = this.close(r, timeoutMs);
     return r.done;
   }
@@ -165,7 +155,6 @@ export class Recorder {
       }
       if (late) this.notice("error", `${late} passage${late === 1 ? "" : "s"} did not finish in time`);
     }
-    this.changed();
     return { path: r.path, late };
   }
   /** Quitting without waiting any longer: stops the current recording and
@@ -199,7 +188,7 @@ export class Recorder {
         text: said.text,
         speech_start: u.speech_start,
         speech_end: u.speech_end,
-        capped: u.capped,
+        cut_at: u.cut_at,
         continues: u.continues,
         dash: said.dash,
       });
@@ -207,15 +196,10 @@ export class Recorder {
         r.file.write(said.text, starts);
         written = true;
       } catch (error) {
-        // The reading view mirrors the file: the passage leaves it again.
-        const last = r.turns.contributions.at(-1)!;
-        last.texts.pop();
-        if (!last.texts.length) r.turns.contributions.pop();
         this.failed(r, error);
       }
     }
     this.settle(r);
-    this.changed();
     return written;
   }
   /** `u` ends without text for its recording. */
