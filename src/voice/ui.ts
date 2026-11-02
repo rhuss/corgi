@@ -1,8 +1,10 @@
 //! Voice mode's screen: where dictation goes, the microphone level against
 //! the threshold, what was heard and what became of it, and the keys.
+import { homedir } from "node:os";
 import * as palette from "../palette";
 import { Style } from "../palette";
 import * as level from "./level";
+import * as transcript from "./transcript";
 import { keys, incomplete, type Key } from "../terminal_keys";
 import { displayWidth, ellipsis } from "../text";
 import { thumb } from "../scroll_thumb";
@@ -11,6 +13,11 @@ import { closeReadiness } from "../pane/terminal";
 import type { VoiceSession, Utterance } from "./session";
 import type { Device } from "./capture";
 import type { Timing } from "./segmenter";
+import type { Recorder } from "./recorder";
+import type { Tuning } from "./tuning";
+import { Reading, clock, wrap } from "./reading";
+
+export { clock };
 
 const reset = "\x1b[0m",
   meter_cells = 20,
@@ -56,11 +63,11 @@ const seconds = (v: number) => `${v} s`;
 const help_entries: [string, string][] = [
   [
     "threshold",
-    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel. Raise it in a noisy room; lower it when quiet words are missed.",
+    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel. Raise it in a noisy room; lower it when quiet words are missed. Changed during a recording, it is the recording's threshold, which later recordings keep.",
   ],
   [
     "silence",
-    "How long a pause ends an utterance and sends it to Whisper. Shorter types sooner but can split a sentence; longer waits through pauses for thought. The grey line under the meter shows the pause running.",
+    "How long a pause ends an utterance and sends it to Whisper. Shorter types sooner but can split a sentence; longer waits through pauses for thought. The grey line under the meter shows the pause running. A recording has its own, shorter silence: changed during a recording, it is that one, and stopping brings back the dictation silence.",
   ],
   [
     "burst",
@@ -76,22 +83,14 @@ const help_entries: [string, string][] = [
     "How much loud audio an utterance needs; anything shorter, such as a cough or a door, is dropped before Whisper.",
   ],
   [
+    "record",
+    "r writes what is said to a transcript file, after asking for its name; r again pauses and resumes, and R stops. A recording keeps writing while dictation is muted. v shows it as a conversation, one block per speaker turn.",
+  ],
+  [
     "",
-    "Click an option to change it. Changes last for this session; voice.json holds the defaults. An utterance is cut at 30 s, as Whisper hears 30 s at a time.",
+    "Click an option to change it. Changes last for this session; voice.json holds the defaults. An utterance is cut at 30 s, as Whisper hears 30 s at a time; while recording, at max_chunk (10 s unless voice.json sets it).",
   ],
 ];
-/** `text` in lines of at most `width` cells, broken between words. */
-function wrap(text: string, width: number): string[] {
-  const out: string[] = [];
-  let line = "";
-  for (const word of text.split(" ")) {
-    if (line && displayWidth(line) + 1 + displayWidth(word) > width) {
-      out.push(line);
-      line = word;
-    } else line = line ? `${line} ${word}` : word;
-  }
-  return line ? [...out, line] : out;
-}
 let plain = "",
   strong = "",
   text = "",
@@ -171,8 +170,22 @@ export type Options = {
   setThreshold: (pct: number) => void;
   listDevices: () => Promise<{ devices: Device[]; notice?: string }>;
   switchDevice: (device: Device) => void;
+  /** Ends voice mode; with a recording, the first call waits for its transcript. */
   quit: () => void;
+  /** Transcript recording, when voice mode offers it. */
+  recorder?: Recorder;
+  /** The values in effect, read for drawing instead of `threshold` and `timing`. */
+  tuning?: Tuning;
+  /** Where relative transcript names go, and what `~/` stands for. */
+  folder?: string;
+  home?: string;
+  /** Starts recording into the file a typed name stands for. */
+  startRecording?: (name: string) => { path: string } | { error: string };
+  stopRecording?: () => void;
 };
+/** The filename prompt: the name as typed; `fresh` while it is still the
+ * suggestion, which the first typed character replaces. */
+type Prompt = { name: string; fresh: boolean };
 type Picker = { devices: Device[]; choice: number; loading: boolean; notice?: string };
 /** A timing's dropdown, opened by a click on it, below its value at `y`, `x`. */
 type Menu = { name: keyof Timing; values: number[]; choice: number; y: number; x: number };
@@ -233,11 +246,6 @@ export function mode(s: VoiceSession): {
   if (s.transcribing) return { note: "♫", style: transcribing_note, ...on };
   return { note: "♫", style: listening_note, ...on };
 }
-/** A local wall-clock time, as 14:02:31. */
-export function clock(ms: number): string {
-  const d = new Date(ms);
-  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2, "0")).join(":");
-}
 /** How long the text took once speech ended: transcription plus delivery. */
 function latency(u: Utterance): string | null {
   const { transcribe_ms, deliver_ms } = u.timings;
@@ -246,6 +254,27 @@ function latency(u: Utterance): string | null {
   return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 type Row = { glyph: string; style: string; label: string; time: string; latency: string | null };
+/** The history: what was said, and the recording's notices, in time order. */
+function historyRows(history: Utterance[], recorder: Recorder | undefined): Row[] {
+  const said = history.map(u => ({ at: u.captured_at, row: row(u) })).filter(r => r.row !== null),
+    notes = (recorder?.notices ?? []).map(n => ({
+      at: n.at,
+      row: {
+        glyph: n.kind === "error" ? "✗" : "○",
+        style: n.kind === "error" ? warm : quiet,
+        label: n.text,
+        time: clock(n.at),
+        latency: null,
+      },
+    }));
+  if (!notes.length) return said.map(r => r.row!);
+  const out: Row[] = [];
+  let i = 0,
+    j = 0;
+  while (i < said.length || j < notes.length)
+    out.push(j >= notes.length || (i < said.length && said[i].at <= notes[j].at) ? said[i++].row! : notes[j++].row);
+  return out;
+}
 /** One history row: a status glyph, when it was said, how long it took, what
  * was said, and what became of it. */
 export function row(u: Utterance): Row | null {
@@ -267,6 +296,8 @@ function describe(u: Utterance): { glyph: string; style: string; label: string }
       return { glyph: "✗", style: warm, label: `${said ? said + " · " : ""}failed: ${u.reason}` };
     case "discarded":
       return { glyph: "○", style: quiet, label: `discarded (${u.reason})` };
+    case "recorded":
+      return { glyph: "●", style: muted, label: `${said} · recorded, not typed (${u.reason})` };
     // Muting drops what was said on purpose; it needs no row.
     case "muted":
     case "dropped":
@@ -307,6 +338,17 @@ export class VoiceUi {
   menu: Menu | null = null;
   /** The help overlay, and how far it is scrolled when it does not fit. */
   help: { scroll: number } | null = null;
+  prompt: Prompt | null = null;
+  /** Quitting waits for the transcript to be finished. */
+  finishing = false;
+  /** The reading view, while open: the first line it shows, or null while it
+   * follows the newest, and how many blocks there were when it stopped following. */
+  reading: { top: number | null; seen: number } | null = null;
+  /** The answer to the last key, until the next one. */
+  private flash: string | null = null;
+  private reader = new Reading();
+  /** The reading view's last frame, which its scroll keys move through. */
+  private reading_area = { lines: 0, height: 1 };
   device: string;
   /** What a click does, and where, from the last frame: the note and the mode
    * mute or unmute, an option opens its menu or switches. */
@@ -323,7 +365,13 @@ export class VoiceUi {
   /** The frame for a `cols` × `rows` screen, from a clear one. */
   draw(cols: number, rows: number): string {
     const at = (y: number, x: number) => `\x1b[${y + 1};${x + 1}H`,
-      s = this.session;
+      s = this.session,
+      tuning = this.opts.tuning,
+      recording = this.opts.recorder?.current?.state ?? null;
+    if (tuning) {
+      this.threshold = tuning.threshold;
+      this.timing = { ...tuning.timing };
+    }
     let frame = "";
     for (let y = 0; y < rows; y++) frame += at(y, 0) + plain + " ".repeat(cols);
     const put = (y: number, x: number, style: string, value: string, room = cols - x) => {
@@ -357,6 +405,9 @@ export class VoiceUi {
       cell(2, "Model:", this.opts.model, strong, second, right);
       const shown = cell(3, "Mode:", state.label, state.label_style, second, right);
       this.hits.push({ y: 3, x: second + label_width, width: shown, act: mute });
+      const after = second + label_width + shown;
+      if (recording === "running") put(3, after, hotBold, "  ● REC");
+      else if (recording === "paused") put(3, after, warm, "  ⏸ paused");
     }
     // The level in braille dots, a quarter cell at a time, dimmed while it is
     // under the threshold, which is a solid warm bar. Grey while muted.
@@ -402,52 +453,167 @@ export class VoiceUi {
     }
     frame += at(history_top - 1, 0) + line + "─".repeat(cols) + reset;
     // What stands in the way, if anything, and the notices; then the history, newest at the bottom.
-    const status =
-        problem(s) ??
-        linkStatus(s, this.opts.target) ??
-        (s.viewer ? null : "No Corgi window is attached; nothing is recorded until one is"),
+    const status = this.status(),
       notices: [string, string][] = [
-        ...(status ? [[s.available && s.link_state !== "refused" ? muted : warm, status] as [string, string]] : []),
+        ...(status ? [status] : []),
         ...this.opts.notices.slice(0, 3).map(n => [warm, n] as [string, string]),
       ];
     notices.forEach(([style, n], i) => put(history_top + i, 1, style, n, cols - 3));
     const top = history_top + notices.length,
       height = Math.max(0, rows - 2 - top),
-      shown = s.history.map(row).filter(r => r !== null);
-    this.scroll = Math.max(0, Math.min(this.scroll, shown.length - height));
-    const last = shown.length - this.scroll,
-      first = Math.max(0, last - height);
-    if (!shown.length) put(top, 1, quiet, "Say something; what is heard shows here.");
-    shown.slice(first, last).forEach((r, i) => {
-      put(top + i, 1, r.style, r.glyph);
-      let x = 3 + put(top + i, 3, quiet, r.time + " ");
-      if (r.latency) x += put(top + i, x, quiet, `(${r.latency}) `);
-      put(top + i, x, r.style, r.label, cols - 2 - x);
-    });
-    const bar = thumb(height, shown.length, first);
-    if (bar) for (let i = 0; i < bar.len; i++) frame += at(top + bar.start + i, cols - 1) + muted + "┃" + reset;
+      contributions = this.opts.recorder?.current?.turns.contributions;
+    // The reading view goes with the recording.
+    if (!contributions) this.reading = null;
+    if (this.reading && contributions) {
+      // Each block behind its gutter bar, newest at the bottom.
+      const r = this.reading,
+        lines = this.reader.lines(contributions, cols - 2),
+        max = Math.max(0, lines.length - height);
+      if (r.top !== null && r.top >= max) r.top = null;
+      const first = r.top ?? max;
+      this.reading_area = { lines: lines.length, height };
+      if (!lines.length) put(top, 1, quiet, "Nothing is written yet; what is recorded shows here.");
+      lines.slice(first, first + height).forEach((l, i) => {
+        if (!l.bar) return;
+        put(top + i, 1, l.bar === "warm" ? warm : accent, "▌");
+        put(top + i, 3, l.kind === "time" ? muted : text, l.text, cols - 4);
+      });
+      const bar = thumb(height, lines.length, first);
+      if (bar) for (let i = 0; i < bar.len; i++) frame += at(top + bar.start + i, cols - 1) + muted + "┃" + reset;
+    } else {
+      const shown = historyRows(s.history, this.opts.recorder);
+      this.scroll = Math.max(0, Math.min(this.scroll, shown.length - height));
+      const last = shown.length - this.scroll,
+        first = Math.max(0, last - height);
+      if (!shown.length) put(top, 1, quiet, "Say something; what is heard shows here.");
+      shown.slice(first, last).forEach((r, i) => {
+        put(top + i, 1, r.style, r.glyph);
+        let x = 3 + put(top + i, 3, quiet, r.time + " ");
+        if (r.latency) x += put(top + i, x, quiet, `(${r.latency}) `);
+        put(top + i, x, r.style, r.label, cols - 2 - x);
+      });
+      const bar = thumb(height, shown.length, first);
+      if (bar) for (let i = 0; i < bar.len; i++) frame += at(top + bar.start + i, cols - 1) + muted + "┃" + reset;
+    }
     // The keys, most needed first; those that do not fit are left out whole.
     frame += at(rows - 1, 1);
     let room = cols - 2;
+    // Scrolled up in the reading view: the blocks that came meanwhile.
+    const below =
+      this.reading?.top != null && contributions ? `${contributions.length - this.reading.seen} new below · G` : null;
     for (const [key, what] of [
       // Padded to "unmute", so the keys after it never shift.
       ["m", (s.muted ? "unmute" : "mute").padEnd(6)],
       ["q", "quit"],
+      ...(this.opts.recorder
+        ? [["r", recording === "running" ? "pause " : recording === "paused" ? "resume" : "record"]]
+        : []),
+      ...(recording ? [["R", "stop"]] : []),
+      ...(recording ? [["v", this.reading ? "back" : "read"]] : []),
+      ...(below ? [["", below]] : []),
       ["?", "help"],
       ["+ -", "threshold"],
       ["f", "filter"],
       ["d", "device"],
-      ["j k", "history"],
+      ["j k", this.reading ? "scroll" : "history"],
     ]) {
-      const width = key.length + what.length + 5;
+      const width = key ? key.length + what.length + 5 : displayWidth(what) + 2;
       if (width > room) break;
       room -= width;
-      frame += `${palette.keycap} ${key} ${reset}${quiet} ${what}  ${reset}`;
+      frame += key ? `${palette.keycap} ${key} ${reset}${quiet} ${what}  ${reset}` : `${accent}${what}  ${reset}`;
     }
     if (this.picker) frame += this.drawPicker(cols, rows, at);
     if (this.menu) frame += this.drawMenu(cols, rows, at);
     if (this.help) frame += this.drawHelp(cols, rows, at);
+    if (this.prompt) frame += this.drawPrompt(cols, rows, at);
     return frame;
+  }
+  /** The status line: what stands in the way, if anything, and its style. */
+  private status(): [string, string] | null {
+    const s = this.session,
+      error = this.opts.recorder?.current ? null : this.opts.recorder?.error;
+    if (this.finishing) return [warm, "Finishing transcript…"];
+    if (this.flash) return [muted, this.flash];
+    const blocked = problem(s) ?? linkStatus(s, this.opts.target);
+    if (blocked) return [s.available && s.link_state !== "refused" ? muted : warm, blocked];
+    if (error) return [warm, `Cannot write the transcript: ${error}`];
+    if (!s.viewer) return [muted, "No Corgi window is attached; nothing is typed until one is"];
+    return null;
+  }
+  /** What a typed transcript name stands for. */
+  private resolveName(name: string): { path: string } | { error: string } {
+    return transcript.resolve(name, this.opts.folder ?? "", this.opts.home ?? homedir());
+  }
+  private drawPrompt(cols: number, rows: number, at: (y: number, x: number) => string): string {
+    const p = this.prompt!,
+      width = Math.min(cols - 4, 72),
+      height = 7,
+      room = width - 4,
+      left = Math.floor((cols - width) / 2),
+      top = Math.floor((rows - height) / 2);
+    let out = box(at, top, left, width, height, "Record a transcript");
+    out += at(top + 1, left + 2) + muted + "File name:" + reset;
+    // A long name shows its end, where the typing is.
+    let name = p.name.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+    if (displayWidth(name) > room - 1) {
+      const chars = [...name];
+      while (chars.length && displayWidth(chars.join("")) > room - 2) chars.shift();
+      name = "…" + chars.join("");
+    }
+    out += at(top + 2, left + 2) + (p.fresh ? focused + name : text + name + accent + "▏") + reset;
+    const where = this.resolveName(p.name),
+      [style, hint] =
+        "error" in where
+          ? [warm, where.error]
+          : transcript.exists(where.path)
+            ? [warm, `appends to the existing file: ${where.path}`]
+            : [quiet, where.path];
+    out += at(top + 3, left + 2) + style + ellipsis(hint, room) + reset;
+    out += at(top + 5, left + 2) + quiet + ellipsis("enter start  esc cancel", room) + reset;
+    return out;
+  }
+  private promptKey(key: Key): void {
+    const p = this.prompt!,
+      edit = (name: string) => {
+        p.name = name;
+        p.fresh = false;
+      };
+    switch (key.kind) {
+      case "esc":
+        this.prompt = null;
+        return;
+      // Quitting cancels the prompt; no file is made.
+      case "cancel":
+        this.prompt = null;
+        return this.opts.quit();
+      case "enter":
+        if ("error" in this.resolveName(p.name)) return;
+        this.prompt = null;
+        // An open error shows in the status line and the history.
+        this.opts.startRecording?.(p.name);
+        return;
+      case "backspace":
+        return edit([...p.name].slice(0, -1).join(""));
+      case "ctrl":
+        if (key.key === "u") edit("");
+        return;
+      case "text":
+        return edit((p.fresh ? "" : p.name) + key.text.replace(/[\x00-\x1f\x7f-\x9f]/g, ""));
+    }
+  }
+  /** r: the filename prompt without a recording, else pause or resume. */
+  private record(): void {
+    const recorder = this.opts.recorder;
+    // Quitting is finishing the transcript; nothing new starts.
+    if (!recorder || !this.opts.startRecording || this.finishing) return;
+    switch (recorder.current?.state) {
+      case "running":
+        return recorder.pause();
+      case "paused":
+        return recorder.resume();
+      default:
+        this.prompt = { name: transcript.defaultName(new Date()), fresh: true };
+    }
   }
   private drawHelp(cols: number, rows: number, at: (y: number, x: number) => string): string {
     const width = Math.min(cols - 4, 78),
@@ -570,9 +736,12 @@ export class VoiceUi {
     for (const key of keys(data)) this.key(key, rows);
   }
   key(key: Key, rows = 24): void {
+    this.flash = null;
+    if (this.prompt) return this.promptKey(key);
     if (this.picker) return this.pickerKey(key);
     if (this.menu) return this.menuKey(key);
     if (this.help) return this.helpKey(key);
+    if (this.reading && this.readingKey(key)) return;
     const page = Math.max(1, rows - history_top - 3),
       back = (n: number) => void (this.scroll = Math.max(0, this.scroll + n));
     switch (key.kind) {
@@ -624,8 +793,70 @@ export class VoiceUi {
             return void this.switchFilter();
           case "?":
             return void (this.help = { scroll: 0 });
+          case "r":
+            return this.record();
+          case "R":
+            return this.opts.stopRecording?.();
+          case "v":
+            if (this.opts.recorder?.current) this.reading = { top: null, seen: 0 };
+            else if (this.opts.recorder) this.flash = "The reading view needs a recording: press r";
+            return;
         }
     }
+  }
+  /** The reading view's own keys: closing it and scrolling, as in the
+   * history. False for the keys it shares with the voice window. */
+  private readingKey(key: Key): boolean {
+    const r = this.reading!,
+      { lines, height } = this.reading_area,
+      page = Math.max(1, height),
+      half = Math.ceil(page / 2),
+      move = (n: number) => {
+        const max = Math.max(0, lines - height);
+        if (r.top === null) r.seen = this.opts.recorder?.current?.turns.contributions.length ?? 0;
+        const to = Math.max(0, (r.top ?? max) + n);
+        r.top = to >= max ? null : to;
+        return true;
+      };
+    switch (key.kind) {
+      case "esc":
+        this.reading = null;
+        return true;
+      case "up":
+        return move(-1);
+      case "down":
+        return move(1);
+      case "pageup":
+        return move(-page);
+      case "pagedown":
+        return move(page);
+      case "home":
+        return move(-lines);
+      case "end":
+        r.top = null;
+        return true;
+      case "ctrl": {
+        const n = { u: -half, d: half, b: -page, f: page }[key.key];
+        if (n === undefined) return false;
+        return move(n);
+      }
+      case "text":
+        switch (key.text) {
+          case "v":
+            this.reading = null;
+            return true;
+          case "k":
+            return move(-1);
+          case "j":
+            return move(1);
+          case "g":
+            return move(-lines);
+          case "G":
+            r.top = null;
+            return true;
+        }
+    }
+    return false;
   }
   private async switchFilter(): Promise<void> {
     if (this.filter === "switching…" || this.filter === "not installed") return;

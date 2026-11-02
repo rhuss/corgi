@@ -489,7 +489,8 @@ receipts.
 `corgi voice setup` installs a local Whisper model; `corgi voice` then types
 what you say into the focused pane, and `corgi voice --ssh HOST` does the same
 for a runtime on another host. It never presses Enter. **prefix M** mutes
-voice. See the [voice guide](voice.md).
+voice. In voice mode, `r` records what you say to a transcript file and `v`
+reads it as it grows. See the [voice guide](voice.md).
 
 ## Settings and troubleshooting
 
@@ -513,12 +514,15 @@ to `~/.local/state/corgi`:
 | `settings.json` | Runtime settings, including shell and inference choices |
 | `recovery/` | Saved layout, terminal output and agent recovery context |
 | `account-previews/`, `limit-history/` | Each account's latest usage reading, and its limit and spend history |
-| `voice.json` | Voice mode's settings, on the machine running `corgi voice` |
+| `voice.json` | Voice mode's settings, on the machine running `corgi voice`, including the `transcripts` folder and the `recording` group's timing |
 | `voice.log` | Voice mode's diagnostics, written only with `corgi voice --verbose` |
 | `accounts.json`, `accounts/` | Provider accounts besides the default, and the folders Corgi made for them; shared by every environment. A new one waits in a private `corgi-account-*` folder in the temporary directory until it's signed in |
 
 Voice models and the speech filter are cached in
 `$XDG_CACHE_HOME/corgi/voice/`, defaulting to `~/.cache/corgi/voice/`.
+Transcripts live in `$XDG_DATA_HOME/corgi/transcripts/`, defaulting to
+`~/.local/share/corgi/transcripts/`, on the machine running `corgi voice`,
+unless `transcripts` in `voice.json` or `--transcripts` names another folder.
 
 An explicit `CORGI_SOCKET` selects another runtime; its workspace/settings
 files live beside the socket. Viewer preferences remain shared. Developer

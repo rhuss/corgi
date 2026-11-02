@@ -95,7 +95,7 @@ export function main(): string {
     i18n.t`  corgi hooks claude|codex       print hook configuration`,
     i18n.t`  corgi integration COMMAND     status, install, uninstall hooks`,
     i18n.t`  corgi account COMMAND         list, add, login, remove provider accounts`,
-    "  corgi voice [--ssh HOST] [--model NAME] [--device ID] [--threshold N] [--silence SECONDS] [--port PORT] [--no-filter] [--verbose]",
+    "  corgi voice [--ssh HOST] [--model NAME] [--device ID] [--threshold N] [--silence SECONDS] [--port PORT] [--no-filter] [--transcripts DIR] [--verbose]",
     i18n.t`                                dictate into the focused pane by speaking`,
     "  corgi voice setup [--model tiny.en|base.en|small.en|medium|large-v3-turbo]",
     i18n.t`                                check tools, download a speech model`,

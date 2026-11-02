@@ -1,6 +1,7 @@
 //! `corgi voice` and `corgi voice setup`: voice mode on the machine with the
 //! microphone, dictating into a local runtime or one over SSH.
 import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import * as errors from "../errors";
 import * as log from "../log";
@@ -12,7 +13,10 @@ import * as models from "./models";
 import * as setup from "./setup";
 import * as capture from "./capture";
 import * as ui from "./ui";
+import * as transcript from "./transcript";
 import { Segmenter } from "./segmenter";
+import { Tuning } from "./tuning";
+import { Recorder } from "./recorder";
 import { Server } from "./whisper";
 import { VoiceSession } from "./session";
 import { LocalLink, type VoiceLink } from "./link";
@@ -56,6 +60,11 @@ export function flags(args: string[]): Flags {
       case "--device":
         if (!value) throw Error("Usage");
         out.device = value;
+        i++;
+        break;
+      case "--transcripts":
+        if (!value) throw Error("Usage");
+        out.transcripts = value;
         i++;
         break;
       case "--no-filter":
@@ -166,6 +175,15 @@ async function voice(
     host ? SshLink.connect(host, { batch: connected, signal }) : LocalLink.connect(socket);
   const timing = { silence: s.silence, pre_roll: s.pre_roll, min_speech: s.min_speech, burst: s.burst },
     segmenter = new Segmenter({ threshold: s.threshold, timing, now: Date.now });
+  // Transcripts stay on this machine, whatever runtime the text goes to.
+  const tuning = new Tuning(segmenter, {
+      dictation: { threshold: s.threshold, silence: s.silence },
+      recording: s.recording,
+      shared: { burst: s.burst, pre_roll: s.pre_roll, min_speech: s.min_speech },
+    }),
+    recorder = new Recorder({ tuning, now: Date.now, log: line => logger.info(line) }),
+    folder = settings.transcriptsFolder(s, process.env, process.cwd()),
+    home = process.env.HOME || homedir();
   // The server starts after the first connection, so a refusal starts nothing.
   let server: Server | null = null,
     restarting = false;
@@ -186,6 +204,7 @@ async function voice(
     now: Date.now,
     pane,
     log: line => logger.info(line),
+    recorder,
   });
   // Over SSH, the first connection may prompt; it happens before the UI takes the terminal.
   try {
@@ -285,7 +304,20 @@ async function voice(
     for (const signal of signals) process.off(signal, onSignal);
   }
   let quit!: () => void;
-  const stopped = new Promise<void>(resolve => (quit = resolve));
+  const stopped = new Promise<void>(resolve => (quit = resolve)),
+    finished: { path: string; late: number }[] = [];
+  let given_up = false;
+  // Quitting with a recording waits for its transcript; quitting again does not.
+  const quitting = () => {
+    if (view.finishing || (!recorder.current && !recorder.stopping.size)) return quit();
+    view.finishing = true;
+    void recorder.stop();
+    void Promise.all([...recorder.stopping].map(r => r.done)).then(results => {
+      // After a second quit, `finish` reported them.
+      if (!given_up) for (const r of results) if (r) finished.push(r);
+      quit();
+    });
+  };
   const view = new ui.VoiceUi(session, {
     target: host ?? "local",
     device: s.device ?? "(default)",
@@ -293,18 +325,34 @@ async function voice(
     threshold: s.threshold,
     filter: vadModel ? "on" : s.speech_filter ? "not installed" : "off",
     timing,
-    setTiming: (name, seconds) => segmenter.setTiming(name, seconds),
+    setTiming: (name, seconds) => tuning.setTiming(name, seconds),
     toggleFilter,
     notices,
-    setThreshold: pct => segmenter.setThreshold(pct),
+    setThreshold: pct => tuning.setThreshold(pct),
     listDevices: () => capture.listDevices(),
     switchDevice: device => {
       logger.info("microphone switched", { device: device.id });
       mic?.switch(device.id);
     },
-    quit: () => quit(),
+    quit: quitting,
+    recorder,
+    tuning,
+    folder,
+    home,
+    startRecording: name => {
+      const where = transcript.resolve(name, folder, home);
+      return "error" in where ? where : recorder.start(where.path);
+    },
+    stopRecording: () => void recorder.stop(),
   });
   await ui.run(view, stopped, cleanup);
+  given_up = true;
+  finished.push(...recorder.finish());
   await cleanup();
+  for (const { path, late } of finished)
+    if (late)
+      process.stderr.write(
+        `corgi: ${late} passage${late === 1 ? "" : "s"} of ${path} did not finish in time and ${late === 1 ? "is" : "are"} not in the transcript\n`,
+      );
   return 0;
 }

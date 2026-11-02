@@ -16,7 +16,9 @@ export type Key =
         | "backspace"
         | "cancel"
         | "pageup"
-        | "pagedown";
+        | "pagedown"
+        | "home"
+        | "end";
     }
   | { kind: "text"; text: string }
   /** Ctrl and a letter, as `d` for Ctrl+D. */
@@ -36,6 +38,14 @@ const named: [string, Key["kind"]][] = [
   ["\x1b[Z", "backtab"],
   ["\x1b[5~", "pageup"],
   ["\x1b[6~", "pagedown"],
+  ["\x1b[H", "home"],
+  ["\x1bOH", "home"],
+  ["\x1b[1~", "home"],
+  ["\x1b[7~", "home"],
+  ["\x1b[F", "end"],
+  ["\x1bOF", "end"],
+  ["\x1b[4~", "end"],
+  ["\x1b[8~", "end"],
 ];
 /** Where `data` ends inside an escape sequence or a paste, or `data.length`:
  * a read can stop between the bytes of one key, and the rest comes next. */
