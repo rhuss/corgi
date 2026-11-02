@@ -157,8 +157,10 @@ step:
 | `○ paused`, `○ resumed` | Passages in between are not written |
 | `○ stopped: PATH` | The file is closed |
 | `● TEXT · recorded, not typed (REASON)` | Written but not typed, because voice mode is muted, has no viewer attached, is not connected, has a backlog, or the delivery failed |
+| `● TEXT · recorded (no answer in time; may have been typed)` | Written, and sent to be typed, but the runtime did not answer in time, so it may have been typed |
 | `✗ recording not started: REASON` | The file could not be created or opened |
 | `✗ recording stopped: REASON` | A write failed. The recording closes, the text written so far stays, and dictation goes on |
+| `✗ recording "pause_break" (P s) is not longer than "silence" (S s), ...` | A silence chosen under `Options` during a recording leaves every passage its own contribution |
 | `✗ N passages did not finish in time` | They were still being transcribed when the recording closed, and are not in the file |
 
 After a failed start or write, the status line also says
@@ -182,11 +184,12 @@ Sounds good. I have a question about the schedule.
 Sure, go ahead.
 ```
 
-Files are UTF-8 with `\n` line ends, readable and writable only by you (0600);
-folders voice mode creates are 0700. Each passage is synced to disk as it is
-written. Choosing an existing file appends to it after exactly one blank line:
-a missing final line break is added first, and a trailing blank line is
-reused. Nothing is overwritten.
+Files are UTF-8 with `\n` line ends. A new transcript is readable and writable
+only by you (0600); folders voice mode creates are 0700. Each passage is
+synced to disk as it is written. Choosing an existing file appends to it after
+exactly one blank line: a missing final line break is added first, and a
+trailing blank line is reused. Nothing is overwritten, and the existing file
+keeps its permissions.
 
 ### Contributions
 
@@ -198,7 +201,9 @@ contribution when:
   this one, without pre-roll;
 - its text starts with a hyphen, en dash or em dash and a space; the dash is
   left out of the file and the reading view, but dictation types it;
-- it is the first passage after starting or resuming.
+- it is the first passage after starting, or the first one you started saying
+  after you paused, once you resume. A passage you said before the pause that
+  is written only after the resume stays with what came before it.
 
 A passage cut at `max_chunk` continues the same contribution. Passages the
 filter removes (filler words, sound markers, lines Whisper invents from
@@ -209,8 +214,8 @@ silence) are not written.
 While a recording runs, voice mode keeps listening when muted, with no Corgi
 window attached, or with no runtime to reach. It writes the passages and
 doesn't type them; the same goes for a passage you were saying when you muted
-or the viewer left, and for one you started while muted, even if you unmute
-before it ends. Without a recording, or with the recording paused, muting
+or the viewer left, and for one you started while muted or with no viewer
+attached, even if that changes before it ends. Without a recording, or with the recording paused, muting
 drops the audio.
 
 While paused, passages still show in the history and are typed as usual, but
@@ -328,7 +333,8 @@ A bad field falls back to its default, and voice mode shows a notice naming
 it, such as `voice.json: "recording.silence" must be 0.5..10; using 1`. A
 `recording` that is not an object uses all its defaults. When `pause_break` is
 not longer than `silence`, a notice says every passage starts a new
-contribution, and both values are kept. Changes to `voice.json` apply the next
+contribution, and both values are kept. The history says so too when a
+silence chosen under `Options` during a recording reaches `pause_break`. Changes to `voice.json` apply the next
 time voice mode starts.
 
 Flags apply to one run. `--transcripts DIR` is relative to the folder you

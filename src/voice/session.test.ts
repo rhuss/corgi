@@ -68,7 +68,8 @@ function session(
     s = new VoiceSession({
       link: opts.links ?? (async () => link),
       transcriber: whisper,
-      segmenter: new Segmenter({ threshold: 44, timing: { silence: 0.5 }, now: () => 0 }),
+      // The recorder's clock: a resume breaks by when speech began.
+      segmenter: new Segmenter({ threshold: 44, timing: { silence: 0.5 }, now: () => performance.now() }),
       now: () => performance.now(),
       deliverTimeoutMs: opts.timeout ?? 2000,
       retryMs: 20,
@@ -682,6 +683,23 @@ test("speech that began muted stays untyped after an unmute", async () => {
   expect(transcript(path)).toBe("private aside\n");
 });
 
+test("speech that began without a viewer stays untyped when one attaches", async () => {
+  const { recorder: r, path } = recorder(),
+    link = new FakeLink(),
+    { s } = session(["before the window"], { link, recorder: r });
+  await s.connect();
+  r.start(path);
+  link.events.emitViewer({ viewer: false, focus: null });
+  const pcm = shapes.speech();
+  begin(s, pcm);
+  link.events.emitViewer({ viewer: true, focus: "dictation" });
+  end(s, pcm);
+  await until(() => s.history[0]?.status === "recorded");
+  expect(statuses(s)).toEqual([["recorded", "no viewer attached"]]);
+  expect(link.calls).toEqual([]);
+  expect(transcript(path)).toBe("before the window\n");
+});
+
 test("a recorded passage that ends while the link is down is typed once it is back", async () => {
   const { recorder: r, path } = recorder();
   // Each connection gets a fresh link; `current` is the one in use.
@@ -698,6 +716,68 @@ test("a recorded passage that ends while the link is down is typed once it is ba
   await until(() => s.history[0]?.status === "delivered");
   expect(current.calls.map(c => c.value)).toEqual(["back again"]);
   expect(transcript(path)).toBe("back again\n");
+});
+
+test("a recorded passage whose typing gets no answer may have been typed", async () => {
+  const { recorder: r, path } = recorder(),
+    link = new FakeLink(),
+    { s } = session(["slow runtime"], { link, recorder: r, timeout: 30 });
+  link.reply = () => new Promise(() => {});
+  await s.connect();
+  r.start(path);
+  speak(s);
+  await until(() => s.history[0]?.status === "recorded");
+  expect(s.history[0]).toMatchObject({
+    status: "recorded",
+    reason: "no answer in time; may have been typed",
+    maybe_typed: true,
+  });
+  expect(link.calls.map(c => c.value)).toEqual(["slow runtime"]);
+  expect(transcript(path)).toBe("slow runtime\n");
+});
+
+test("muted, a passage cut off by a pause or a stop is dropped, unheard and unwritten", async () => {
+  for (const end_recording of ["pause", "stop"] as const) {
+    const { recorder: r, path } = recorder(),
+      { s, whisper, link } = session(["private"], { recorder: r });
+    await s.connect();
+    r.start(path);
+    s.setMuted(true);
+    const pcm = shapes.speech();
+    begin(s, pcm);
+    expect(s.recording).toBe(true);
+    if (end_recording === "pause") r.pause();
+    else void r.stop();
+    end(s, pcm);
+    await Bun.sleep(30);
+    expect(statuses(s)).toEqual([["muted", null]]);
+    expect(s.recording).toBe(false);
+    expect(whisper.requests).toBe(0);
+    expect(link.calls).toEqual([]);
+    expect(transcript(path)).toBe("");
+  }
+});
+
+test("nothing about a recording goes to the runtime, only the typed text", async () => {
+  const { recorder: r, path } = recorder(),
+    link = new FakeLink(),
+    { s } = session(["typed and kept", "kept only"], { link, recorder: r });
+  await s.connect();
+  const sets = link.sets.length;
+  r.start(path);
+  speak(s);
+  await until(() => s.history[0]?.status === "delivered");
+  s.setMuted(true);
+  speak(s);
+  await until(() => s.history[1]?.status === "recorded");
+  r.pause();
+  r.resume();
+  await r.stop();
+  expect(link.calls.map(c => [c.op, c.value])).toEqual([["type", "typed and kept"]]);
+  // The mute goes out as before; the path and the recording state never do.
+  expect(link.sets.slice(sets)).toEqual([{ muted: true }]);
+  expect(JSON.stringify(link.watched)).not.toContain(path);
+  expect(transcript(path)).toBe("typed and kept\nkept only\n");
 });
 
 test("a viewer that leaves mid-passage leaves it written and untyped", async () => {

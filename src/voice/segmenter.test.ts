@@ -65,6 +65,9 @@ test("a capped utterance carries on in the next one, without a gap", () => {
   expect(segments.map(s => s.capped)).toEqual([true, false]);
   expect(segments.map(s => s.continues)).toEqual([false, true]);
   const [first, next] = segments;
+  // The cut is where the next one's speech starts, exactly.
+  expect(first.cut_at).toBe(next.speech_start);
+  expect(next.cut_at).toBeNull();
   expect(first.speech_start).toBe(first.started_at + 300);
   // The cap cuts at 30 s including the pre-roll; the speech runs up to the cut.
   expect(first.speech_end).toBe(first.started_at + 30_000);

@@ -28,13 +28,17 @@ export type Utterance = {
   record: Recording | null;
   /** Why it is no longer typed; null while it may still be. */
   untyped: Untyped | null;
-  /** When its loud audio began and ended, whether the cap cut it, and whether
-   * it carries on such a cut. */
+  /** Sent to be typed, but no answer came in time: it may have been typed. */
+  maybe_typed: boolean;
+  /** When its loud audio began and ended, where the cap cut it (if it did),
+   * and whether it carries on such a cut. */
   speech_start: number;
   speech_end: number;
-  capped: boolean;
+  cut_at: number | null;
   continues: boolean;
 };
+/** A delivery that got no answer in time: the text may have been typed. */
+const no_answer = "no answer in time; may have been typed";
 /** Why a passage is not typed. */
 export type Untyped = "muted" | "no_viewer" | "backlog";
 /** What the history says for each, after "recorded, not typed" or "discarded". */
@@ -219,8 +223,10 @@ export class VoiceSession {
     for (const segment of done) this.segmented(segment);
     if (this.deps.segmenter.recording && !this.current) {
       this.current = this.utterance("recording");
-      // Speech that began muted stays untyped, even if unmuted before it ends.
+      // Speech that began muted or without a viewer stays untyped, even if
+      // that changes before it ends: only a recording was listening.
       if (this.muted) this.untype(this.current, "muted");
+      else if (!this.viewer) this.untype(this.current, "no_viewer");
       this.changed();
     } else if (!this.deps.segmenter.recording && this.current) {
       // Too little speech to count.
@@ -241,9 +247,10 @@ export class VoiceSession {
       timings: {},
       record: null,
       untyped: null,
+      maybe_typed: false,
       speech_start: 0,
       speech_end: 0,
-      capped: false,
+      cut_at: null,
       continues: false,
     };
     this.history.push(u);
@@ -257,7 +264,7 @@ export class VoiceSession {
     u.duration = segment.duration;
     u.speech_start = segment.speech_start;
     u.speech_end = segment.speech_end;
-    u.capped = segment.capped;
+    u.cut_at = segment.cut_at;
     u.continues = segment.continues;
     this.deps.recorder?.claim(u);
     if (!u.record && (this.muted || !this.viewer))
@@ -335,12 +342,15 @@ export class VoiceSession {
       this.finish(u, "delivered", null);
     } catch (error) {
       u.timings.deliver_ms = this.deps.now() - started;
+      // The text was sent; only the answer is missing, so it may still arrive.
+      const timeout = errors.is(error, "Timeout");
+      u.maybe_typed = timeout;
       // Written to the transcript, so it is kept as recorded, with why it was not typed.
-      if (u.record) this.finish(u, "recorded", errors.name(error) === "VoiceMuted" ? "muted" : reason(error));
+      if (u.record)
+        this.finish(u, "recorded", timeout ? no_answer : errors.name(error) === "VoiceMuted" ? "muted" : reason(error));
       // Muted from a viewer before this arrived: dropped, as a mute here drops it.
       else if (errors.name(error) === "VoiceMuted") this.finish(u, "muted", null);
-      // The text was sent; only the answer is missing, so it may still arrive.
-      else if (errors.is(error, "Timeout")) this.finish(u, "failed", "no answer in time; may have been typed");
+      else if (timeout) this.finish(u, "failed", no_answer);
       else this.finish(u, "failed", reason(error));
     }
   }

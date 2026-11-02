@@ -96,7 +96,8 @@ test("--transcripts names the folder for one run; it needs a value", () => {
   expect(() => flags(["--transcripts"])).toThrow("Usage");
 });
 
-test("the transcript folder is on this machine, whatever --ssh names", () => {
+// What reaches the runtime during a recording is checked in session.test.ts.
+test("--transcripts wins over voice.json and resolves against the start folder; --ssh changes nothing", () => {
   const env = { HOME: "/home/me" },
     folder = (args: string[]) =>
       settings.transcriptsFolder(settings.merge(settings.defaults(), flags(args)), env, "/work");
