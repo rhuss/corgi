@@ -1,10 +1,15 @@
-import { test, expect } from "bun:test";
+import { test, expect, afterEach } from "bun:test";
 import { VoiceUi, problem, clock, type Options } from "./ui";
 import { VoiceSession, type Utterance } from "./session";
 import { Segmenter, default_timing } from "./segmenter";
 import type { Device } from "./capture";
 import * as palette from "../palette";
 import { Style } from "../palette";
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { Recorder } from "./recorder";
+import * as transcript from "./transcript";
+import type { Tuning } from "./tuning";
 
 /** The text a frame leaves on a `cols` × `rows` screen. */
 function screen(frame: string, cols: number, rows: number): string[] {
@@ -81,6 +86,11 @@ const said = (
   text,
   reason,
   timings: {},
+  record: null,
+  type: true,
+  speech_start: 0,
+  speech_end: 0,
+  capped: false,
 });
 
 test("the screen shows the target, the meter and what happened", () => {
@@ -500,4 +510,317 @@ test("m mutes and q or ctrl+c quits", () => {
   ui.input("q");
   ui.input("\x03");
   expect(calls.quit).toBe(2);
+});
+
+const folders: string[] = [];
+afterEach(() => {
+  for (const d of folders.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+/** A voice window that records into a fresh folder, as main.ts wires it. */
+function recording(opts: Partial<Options> = {}) {
+  // Short enough for the 80-column frames these tests read.
+  const folder = mkdtempSync("/tmp/corgi-ui-"),
+    tuning = { pause_break: 2, begin: () => {}, end: () => {} } as unknown as Tuning,
+    recorder = new Recorder({ tuning, now: () => 0 }),
+    started: string[] = [];
+  folders.push(folder);
+  let stops = 0;
+  const made = setup({
+    recorder,
+    folder,
+    home: "/home/me",
+    startRecording: name => {
+      started.push(name);
+      const where = transcript.resolve(name, folder, "/home/me");
+      return "error" in where ? where : recorder.start(where.path);
+    },
+    stopRecording: () => {
+      stops++;
+      void recorder.stop();
+    },
+    ...opts,
+  });
+  return { ...made, recorder, folder, started, stops: () => stops };
+}
+
+test("r asks for a file name, suggesting one; typing replaces it", () => {
+  const { ui, folder, started } = recording();
+  ui.input("r");
+  let rows = screen(ui.draw(80, 20), 80, 20).join("\n");
+  expect(rows).toContain("╭─ Record a transcript");
+  expect(rows).toMatch(/transcript-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.txt/);
+  expect(rows).toContain(join(folder, "transcript-"));
+  expect(rows).toContain("enter start  esc cancel");
+  // The first character replaces the suggestion; Backspace and Ctrl+U edit.
+  ui.input("standupX");
+  ui.input("\x7f");
+  expect(ui.prompt?.name).toBe("standup");
+  ui.input("\x15");
+  expect(ui.prompt?.name).toBe("");
+  rows = screen(ui.draw(80, 20), 80, 20).join("\n");
+  expect(rows).toContain("name is empty");
+  // Enter on a refused name does nothing; Esc cancels without a file.
+  ui.input("\r");
+  expect(ui.prompt).not.toBeNull();
+  ui.input("../x.txt");
+  expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain("stays inside the transcript folder: remove ..");
+  ui.input("\x1b");
+  expect(ui.prompt).toBeNull();
+  expect(started).toEqual([]);
+});
+
+test("Enter starts the recording; the mode row shows REC and the footer the keys", () => {
+  const { ui, recorder, folder, started } = recording();
+  let footer = screen(ui.draw(80, 20), 80, 20)[19];
+  expect(footer).toContain(" r  record");
+  expect(footer).not.toContain(" R ");
+  ui.input("r");
+  ui.input("call.txt\r");
+  expect(started).toEqual(["call.txt"]);
+  expect(ui.prompt).toBeNull();
+  expect(recorder.current?.path).toBe(join(folder, "call.txt"));
+  const frame = ui.draw(80, 20),
+    rows = screen(frame, 80, 20);
+  expect(rows[3]).toContain("Mode:    Listening  ● REC");
+  expect(frame).toContain(new Style({ fg: "hot", bg: "bg", bold: true }).sgr() + "  ● REC");
+  footer = rows[19];
+  expect(footer).toContain(" r  pause");
+  expect(footer).toContain(" R  stop");
+  // The keys after it keep their place whatever r says.
+  expect(footer.indexOf(" R ")).toBe(screen(ui.draw(80, 20), 80, 20)[19].indexOf(" R "));
+  expect(rows.join("\n")).toContain(`○ ${clock(0)} recording started: ${join(folder, "call.txt")}`);
+});
+
+test("the prompt says when the name is an existing file it appends to", () => {
+  const { ui, folder } = recording();
+  writeFileSync(join(folder, "notes.txt"), "Earlier.\n");
+  ui.input("r");
+  ui.input("notes.txt");
+  expect(screen(ui.draw(100, 20), 100, 20).join("\n")).toContain(
+    `appends to the existing file: ${join(folder, "notes.txt")}`,
+  );
+  ui.input("\x1b");
+  ui.input("r");
+  ui.input("~/x.txt");
+  expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain("/home/me/x.txt");
+});
+
+test("R stops the recording, and quitting from the prompt makes no file", async () => {
+  const { ui, calls, recorder, folder, stops } = recording();
+  ui.input("r");
+  ui.input("a.txt\r");
+  ui.input("R");
+  expect(stops()).toBe(1);
+  expect(recorder.current).toBeNull();
+  expect(screen(ui.draw(80, 20), 80, 20)[3]).not.toContain("REC");
+  await Bun.sleep(0);
+  expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain(`stopped: ${join(folder, "a.txt")}`);
+  ui.input("r");
+  ui.input("b.txt");
+  ui.input("\x03");
+  expect(ui.prompt).toBeNull();
+  expect(calls.quit).toBe(1);
+  expect(existsSync(join(folder, "b.txt"))).toBe(false);
+});
+
+test("a file that cannot be opened is reported in the status line and the history", () => {
+  const { ui, folder } = recording();
+  writeFileSync(join(folder, "taken"), "");
+  ui.input("r");
+  ui.input("taken/x.txt\r");
+  const rows = screen(ui.draw(120, 20), 120, 20);
+  expect(rows[9]).toContain("Cannot write the transcript: ");
+  expect(rows.join("\n")).toMatch(/✗ \d\d:\d\d:\d\d recording not started: /);
+  expect(rows[3]).not.toContain("REC");
+});
+
+test("recorder notices and passages share the history in time order", () => {
+  const { ui, session, recorder } = recording();
+  recorder.notices.push({ at: 1500, kind: "info", text: "paused" });
+  recorder.notices.push({ at: 3500, kind: "error", text: "1 passage did not finish in time" });
+  session.history = [
+    { ...said(1, "delivered", "first"), captured_at: 1000 },
+    { ...said(2, "delivered", "second"), captured_at: 2000 },
+  ];
+  const lines = screen(ui.draw(80, 20), 80, 20)
+    .slice(9, 18)
+    .map(r => r.trim())
+    .filter(Boolean);
+  expect(lines.map(l => l.replace(/\d\d:\d\d:\d\d /, ""))).toEqual([
+    "✓ first",
+    "○ paused",
+    "✓ second",
+    "✗ 1 passage did not finish in time",
+  ]);
+});
+
+test("while quitting waits for the transcript, the status line says so", () => {
+  const { ui } = recording();
+  ui.finishing = true;
+  expect(screen(ui.draw(80, 20), 80, 20)[9]).toContain("Finishing transcript…");
+});
+
+test("a passage written but not typed shows as recorded, with why", () => {
+  const { ui, session, recorder } = recording();
+  session.history = [said(1, "recorded", "a call", "muted"), said(2, "recorded", "and more", "no viewer attached")];
+  const rows = screen(ui.draw(80, 20), 80, 20).join("\n"),
+    at = clock(0);
+  expect(rows).toContain(`● ${at} a call · recorded, not typed (muted)`);
+  expect(rows).toContain(`● ${at} and more · recorded, not typed (no viewer attached)`);
+  expect(ui.draw(80, 20)).toContain(new Style({ fg: "muted", bg: "bg" }).sgr() + "a call · recorded");
+  // Muted while recording: the note and the meter stay grey; REC says speech is still kept.
+  session.muted = true;
+  const dir = mkdtempSync("/tmp/corgi-ui-");
+  folders.push(dir);
+  recorder.start(join(dir, "t.txt"));
+  const frame = ui.draw(80, 20);
+  expect(screen(frame, 80, 20)[3]).toContain("Mode:    MUTED  ● REC");
+  expect(frame).toContain(new Style({ fg: "muted", bg: "bg" }).sgr() + "♫");
+  // Without a viewer, the status says nothing is typed, not that nothing is recorded.
+  session.muted = false;
+  session.viewer = false;
+  expect(screen(ui.draw(80, 20), 80, 20)[9]).toContain("No Corgi window is attached; nothing is typed until one is");
+});
+
+test("r pauses and resumes without a prompt; R stops from paused", () => {
+  const { ui, recorder, stops } = recording();
+  ui.input("r");
+  ui.input("p.txt\r");
+  ui.input("r");
+  expect(recorder.current?.state).toBe("paused");
+  expect(ui.prompt).toBeNull();
+  let frame = ui.draw(80, 20),
+    rows = screen(frame, 80, 20);
+  expect(rows[3]).toContain("Mode:    Listening  ⏸ paused");
+  expect(frame).toContain(new Style({ fg: "warm", bg: "bg" }).sgr() + "  ⏸ paused");
+  expect(rows[19]).toContain(" r  resume");
+  expect(rows.join("\n")).toContain("○ 00:00:00 paused");
+  ui.input("r");
+  expect(recorder.current?.state).toBe("running");
+  rows = screen(ui.draw(80, 20), 80, 20);
+  expect(rows[19]).toContain(" r  pause");
+  expect(rows.join("\n")).toContain("○ 00:00:00 resumed");
+  ui.input("r");
+  ui.input("R");
+  expect(stops()).toBe(1);
+  expect(recorder.current).toBeNull();
+  frame = ui.draw(80, 20);
+  expect(screen(frame, 80, 20)[3]).not.toContain("paused");
+});
+
+test("while quitting waits, r starts nothing new", () => {
+  const { ui } = recording();
+  ui.finishing = true;
+  ui.input("r");
+  expect(ui.prompt).toBeNull();
+});
+
+/** A running recording with `n` one-line contributions, a minute apart. */
+function conversation(n: number) {
+  const made = recording();
+  made.ui.input("r");
+  made.ui.input("c.txt\r");
+  const contributions = made.recorder.current!.turns.contributions;
+  for (let i = 0; i < n; i++) contributions.push({ started_at: 60_000 * i, texts: [`block ${i}`] });
+  return { ...made, contributions };
+}
+
+test("v without a recording only says why", () => {
+  const { ui } = recording();
+  ui.input("v");
+  expect(ui.reading).toBeNull();
+  expect(screen(ui.draw(80, 20), 80, 20)[9]).toContain("The reading view needs a recording: press r");
+  ui.input("+");
+  expect(screen(ui.draw(80, 20), 80, 20)[9]).not.toContain("reading view");
+});
+
+test("the reading view shows each contribution as a block behind alternating gutters", () => {
+  const { ui, calls, session, contributions } = conversation(2);
+  contributions[1].texts.push("and more");
+  expect(screen(ui.draw(80, 20), 80, 20)[19]).toContain(" v  read");
+  ui.input("v");
+  const frame = ui.draw(80, 20),
+    rows = screen(frame, 80, 20);
+  const body = rows.slice(9, 18).map(r => r.trimEnd());
+  expect(body.slice(0, 5)).toEqual([` ▌ ${clock(0)}`, " ▌ block 0", "", ` ▌ ${clock(60_000)}`, " ▌ block 1 and more"]);
+  expect(frame).toContain(new Style({ fg: "accent", bg: "bg" }).sgr() + "▌");
+  expect(frame).toContain(new Style({ fg: "warm", bg: "bg" }).sgr() + "▌");
+  // The meter and the threshold stay, and so do their keys.
+  expect(rows[4]).toContain("T:44");
+  expect(rows[19]).toContain(" v  back");
+  ui.input("+");
+  ui.input("\x1b[<64;10;12M");
+  expect(calls.thresholds).toEqual([46, 48]);
+  ui.input("m");
+  expect(session.muted).toBe(true);
+  expect(ui.reading).not.toBeNull();
+  ui.input("v");
+  expect(ui.reading).toBeNull();
+  ui.input("v");
+  ui.input("\x1b");
+  expect(ui.reading).toBeNull();
+});
+
+test("the reading view follows new speech until scrolled up, and counts what came", () => {
+  const { ui, contributions } = conversation(10);
+  ui.input("v");
+  const body = () =>
+    screen(ui.draw(80, 20), 80, 20)
+      .slice(9, 18)
+      // Without the scroll bar in the last column.
+      .map(r => r.slice(0, 79).trim())
+      .filter(Boolean);
+  expect(body().at(-1)).toBe("▌ block 9");
+  contributions.push({ started_at: 600_000, texts: ["block 10"] });
+  expect(body().at(-1)).toBe("▌ block 10");
+  // Scrolled up, it stays put and the footer counts the new blocks.
+  ui.input("k");
+  const held = body();
+  contributions.push({ started_at: 660_000, texts: ["block 11"] });
+  contributions.push({ started_at: 720_000, texts: ["block 12"] });
+  expect(body()).toEqual(held);
+  expect(screen(ui.draw(80, 20), 80, 20)[19]).toContain("2 new below · G");
+  ui.input("G");
+  expect(body().at(-1)).toBe("▌ block 12");
+  expect(screen(ui.draw(80, 20), 80, 20)[19]).not.toContain("new below");
+  // The history's keys scroll it, and End follows again.
+  ui.input("g");
+  expect(body()[0]).toBe(`▌ ${clock(0)}`);
+  ui.input("\x1b[F");
+  expect(body().at(-1)).toBe("▌ block 12");
+  for (const key of ["\x1b[5~", "\x15", "\x02", "\x1b[A"]) {
+    ui.input(key, 20);
+    expect(ui.reading?.top).not.toBeNull();
+    ui.input("\x1b[F");
+  }
+  ui.input("\x1b[5~");
+  ui.input("\x1b[6~");
+  ui.input("\x06");
+  ui.input("\x04");
+  ui.input("j");
+  ui.input("\x1b[B");
+  expect(ui.reading?.top).toBeNull();
+});
+
+test("stopping the recording closes the reading view", () => {
+  const { ui } = conversation(1);
+  ui.input("v");
+  ui.input("r");
+  // Paused, it stays open.
+  ui.draw(80, 20);
+  expect(ui.reading).not.toBeNull();
+  ui.input("R");
+  const rows = screen(ui.draw(80, 20), 80, 20);
+  expect(ui.reading).toBeNull();
+  expect(rows[19]).not.toContain(" v ");
+});
+
+test("the help explains recording and its own timing", () => {
+  const { ui } = setup();
+  ui.input("?");
+  for (let i = 0; i < 60; i++) ui.input("j");
+  const rows = screen(ui.draw(100, 40), 100, 40).join("\n");
+  expect(rows).toContain("record");
+  expect(rows).toContain("R stops");
+  expect(rows).toContain("max_chunk");
 });

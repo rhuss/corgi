@@ -1,7 +1,12 @@
-import { test, expect } from "bun:test";
+import { test, expect, afterEach } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { VoiceSession } from "./session";
 import { Segmenter } from "./segmenter";
+import { Recorder } from "./recorder";
 import { Events, type VoiceLink, type WatchRequest } from "./link";
+import type { Tuning } from "./tuning";
 import { shapes } from "../../tests/fixtures/voice/make_pcm";
 
 /** A link whose replies the test hands out. */
@@ -51,7 +56,12 @@ class FakeWhisper {
 }
 function session(
   script: string[],
-  opts: { link?: FakeLink; links?: (signal: AbortSignal) => Promise<VoiceLink>; timeout?: number } = {},
+  opts: {
+    link?: FakeLink;
+    links?: (signal: AbortSignal) => Promise<VoiceLink>;
+    timeout?: number;
+    recorder?: Recorder;
+  } = {},
 ) {
   const link = opts.link ?? new FakeLink(),
     whisper = new FakeWhisper(script),
@@ -62,9 +72,22 @@ function session(
       now: () => performance.now(),
       deliverTimeoutMs: opts.timeout ?? 2000,
       retryMs: 20,
+      recorder: opts.recorder,
     });
   return { s, link, whisper };
 }
+const folders: string[] = [];
+afterEach(() => {
+  for (const d of folders.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+/** A recorder with timing that never changes, and a transcript path in a fresh folder. */
+function recorder() {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-session-")),
+    tuning = { pause_break: 2, begin: () => {}, end: () => {} } as unknown as Tuning;
+  folders.push(dir);
+  return { recorder: new Recorder({ tuning, now: () => performance.now() }), path: join(dir, "t.txt") };
+}
+const transcript = (path: string) => (existsSync(path) ? readFileSync(path, "utf8") : "");
 /** One utterance: 1.5 s of tone, then enough silence to end it. */
 function speak(s: VoiceSession) {
   const pcm = shapes.speech();
@@ -525,4 +548,208 @@ test("a transcription that times out says so, not that it may have been typed", 
   await until(() => s.history[0]?.status === "failed");
   expect(s.history[0].reason).toBe("timed out");
   expect(link.calls).toEqual([]);
+});
+
+test("a recording while unmuted writes each passage and types it too", async () => {
+  const { recorder: r, path } = recorder(),
+    { s, link } = session(["refactor the parser", "um, add tests"], { recorder: r });
+  await s.connect();
+  r.start(path);
+  speak(s);
+  speak(s);
+  await until(() => s.history.filter(u => u.status === "delivered").length === 2);
+  expect(link.calls.map(c => c.value)).toEqual(["refactor the parser", "add tests"]);
+  expect(transcript(path)).toBe("refactor the parser\nadd tests\n");
+  expect(s.history.every(u => u.record !== null && u.speech_end > u.speech_start)).toBe(true);
+});
+
+test("a passage that began before the recording and ended after it is written", async () => {
+  const { recorder: r, path } = recorder(),
+    { s } = session(["straddles the start"], { recorder: r });
+  await s.connect();
+  const pcm = shapes.speech();
+  let at = 0;
+  for (; at < 16000; at += 320) s.frame(pcm.subarray(at, at + 320));
+  r.start(path);
+  for (; at < pcm.length; at += 320) s.frame(pcm.subarray(at, at + 320));
+  await until(() => s.history[0]?.status === "delivered");
+  expect(transcript(path)).toBe("straddles the start\n");
+});
+
+test("a passage that ends before the recording starts is not written", async () => {
+  const { recorder: r, path } = recorder(),
+    { s, whisper } = session(["before"], { recorder: r });
+  let open!: () => void;
+  whisper.gate = new Promise(resolve => (open = resolve));
+  await s.connect();
+  speak(s);
+  r.start(path);
+  open();
+  await until(() => s.history[0]?.status === "delivered");
+  expect(s.history[0].record).toBeNull();
+  expect(transcript(path)).toBe("");
+});
+
+test("a claimed passage that comes to nothing does not hold up a stop", async () => {
+  const { recorder: r, path } = recorder(),
+    { s, whisper } = session(["um", ""], { recorder: r });
+  await s.connect();
+  r.start(path);
+  speak(s);
+  await until(() => s.history[0]?.status === "dropped");
+  let fail!: (error: Error) => void;
+  whisper.transcribe = () => new Promise<string>((_, reject) => (fail = reject));
+  speak(s);
+  await until(() => s.history[1]?.status === "transcribing" && fail !== undefined);
+  const stopping = r.stop(5000);
+  fail(Error("Timeout"));
+  const started = performance.now();
+  expect(await stopping).toMatchObject({ late: 0 });
+  expect(performance.now() - started).toBeLessThan(1000);
+  expect(s.history[1].status).toBe("failed");
+  expect(transcript(path)).toBe("");
+});
+
+/** The first second of an utterance: speech is still in progress. */
+function begin(s: VoiceSession, pcm: Int16Array) {
+  for (let at = 0; at < 16000; at += 320) s.frame(pcm.subarray(at, at + 320));
+}
+function end(s: VoiceSession, pcm: Int16Array) {
+  for (let at = 16000; at < pcm.length; at += 320) s.frame(pcm.subarray(at, at + 320));
+}
+
+test("muted while recording, speech is written but never typed", async () => {
+  const { recorder: r, path } = recorder(),
+    { s, link } = session(["a call", "goes on"], { recorder: r });
+  await s.connect();
+  s.setMuted(true);
+  r.start(path);
+  speak(s);
+  speak(s);
+  await until(() => s.history.filter(u => u.status === "recorded").length === 2);
+  expect(statuses(s)).toEqual([
+    ["recorded", "muted"],
+    ["recorded", "muted"],
+  ]);
+  expect(link.calls).toEqual([]);
+  expect(transcript(path)).toBe("a call\ngoes on\n");
+});
+
+test("muted with the recording paused, audio is dropped as before", async () => {
+  const { recorder: r, path } = recorder(),
+    { s, whisper, link } = session(["private"], { recorder: r });
+  await s.connect();
+  r.start(path);
+  r.pause();
+  s.setMuted(true);
+  speak(s);
+  await Bun.sleep(30);
+  expect(whisper.requests).toBe(0);
+  expect(s.history).toEqual([]);
+  expect(link.calls).toEqual([]);
+  expect(transcript(path)).toBe("");
+});
+
+test("a mute in the middle of a passage still writes it, untyped", async () => {
+  const { recorder: r, path } = recorder(),
+    { s, link } = session(["half muted"], { recorder: r });
+  await s.connect();
+  r.start(path);
+  const pcm = shapes.speech();
+  begin(s, pcm);
+  s.setMuted(true);
+  expect(s.recording).toBe(true);
+  end(s, pcm);
+  await until(() => s.history[0]?.status === "recorded");
+  expect(statuses(s)).toEqual([["recorded", "muted"]]);
+  expect(link.calls).toEqual([]);
+  expect(transcript(path)).toBe("half muted\n");
+});
+
+test("a viewer that leaves mid-passage leaves it written and untyped", async () => {
+  const { recorder: r, path } = recorder(),
+    link = new FakeLink(),
+    { s } = session(["nobody watching", "still nobody"], { link, recorder: r });
+  await s.connect();
+  r.start(path);
+  const pcm = shapes.speech();
+  begin(s, pcm);
+  link.events.emitViewer({ viewer: false, focus: null });
+  end(s, pcm);
+  // And speech while no viewer is attached is heard too.
+  speak(s);
+  await until(() => s.history.filter(u => u.status === "recorded").length === 2);
+  expect(statuses(s)).toEqual([
+    ["recorded", "no viewer attached"],
+    ["recorded", "no viewer attached"],
+  ]);
+  expect(link.calls).toEqual([]);
+  expect(transcript(path)).toBe("nobody watching\nstill nobody\n");
+});
+
+test("with the link down, a recorded passage is written and says why it was not typed", async () => {
+  const { recorder: r, path } = recorder(),
+    link = new FakeLink(),
+    { s } = session(["offline"], { links: async () => link, recorder: r });
+  await s.connect();
+  link.events.emitClosed("runtime_gone");
+  r.start(path);
+  speak(s);
+  await until(() => s.history[0]?.status === "recorded");
+  expect(statuses(s)).toEqual([["recorded", "not connected"]]);
+  expect(transcript(path)).toBe("offline\n");
+  s.close();
+});
+
+test("a typing backlog never drops a recorded passage from the transcript", async () => {
+  const { recorder: r, path } = recorder(),
+    { s, whisper } = session(["one", "two", "three", "four", "five", "six"], { recorder: r });
+  let open!: () => void;
+  whisper.gate = new Promise(resolve => (open = resolve));
+  await s.connect();
+  r.start(path);
+  for (let i = 0; i < 6; i++) speak(s);
+  expect(statuses(s).map(([status]) => status)).toEqual(Array(6).fill("transcribing"));
+  open();
+  await until(() => s.history.every(u => u.status === "delivered" || u.status === "recorded"));
+  expect(statuses(s)).toEqual([
+    ...Array(4).fill(["delivered", null]),
+    ["recorded", "backlog"],
+    ["recorded", "backlog"],
+  ]);
+  expect(transcript(path)).toBe("one\ntwo\nthree\nfour\nfive\nsix\n");
+});
+
+test("a passage while paused is typed but not written; the next one after resume starts a contribution", async () => {
+  const { recorder: r, path } = recorder(),
+    { s, link } = session(["before", "aside", "after"], { recorder: r });
+  await s.connect();
+  r.start(path);
+  speak(s);
+  await until(() => s.history[0]?.status === "delivered");
+  r.pause();
+  speak(s);
+  await until(() => s.history[1]?.status === "delivered");
+  expect(s.history[1].record).toBeNull();
+  r.resume();
+  speak(s);
+  await until(() => s.history[2]?.status === "delivered");
+  expect(link.calls.map(c => c.value)).toEqual(["before", "aside", "after"]);
+  expect(transcript(path)).toBe("before\n\nafter\n");
+});
+
+test("a passage muted and unmuted while it is said is written but not typed", async () => {
+  const { recorder: r, path } = recorder(),
+    { s, link } = session(["on and off"], { recorder: r });
+  await s.connect();
+  r.start(path);
+  const pcm = shapes.speech();
+  begin(s, pcm);
+  s.setMuted(true);
+  s.setMuted(false);
+  end(s, pcm);
+  await until(() => s.history[0]?.status === "recorded");
+  expect(statuses(s)).toEqual([["recorded", "muted"]]);
+  expect(link.calls).toEqual([]);
+  expect(transcript(path)).toBe("on and off\n");
 });

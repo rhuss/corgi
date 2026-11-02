@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { flags, message } from "./main";
+import * as settings from "./settings";
 import { exitError } from "./bridge";
 import * as config from "../build_config";
 
@@ -82,4 +83,18 @@ test("how ssh ended says why the bridge never answered", () => {
   const ssh = exitError(255, "ssh: connect to host devbox port 22: Connection refused\x1b]0;x\x07\n");
   expect(ssh.message).toBe("SshFailed");
   expect((ssh as { detail?: string }).detail).toBe("ssh: connect to host devbox port 22: Connection refused ]0;x ");
+});
+
+test("--transcripts names the folder for one run; it needs a value", () => {
+  expect(flags(["--transcripts", "notes/calls"])).toEqual({ transcripts: "notes/calls" });
+  expect(() => flags(["--transcripts"])).toThrow("Usage");
+});
+
+test("the transcript folder is on this machine, whatever --ssh names", () => {
+  const env = { HOME: "/home/me" },
+    folder = (args: string[]) =>
+      settings.transcriptsFolder(settings.merge(settings.defaults(), flags(args)), env, "/work");
+  expect(folder(["--ssh", "devbox", "--transcripts", "calls"])).toBe("/work/calls");
+  expect(folder(["--ssh", "devbox"])).toBe("/home/me/.local/share/corgi/transcripts");
+  expect(folder([])).toBe(folder(["--ssh", "devbox"]));
 });

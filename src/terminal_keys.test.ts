@@ -28,6 +28,11 @@ test("clicks and wheel notches come from SGR mouse reports", () => {
   expect(keys("\x1b[<2;5;3M\x1b[<35;5;3M")).toEqual([]);
 });
 
+test("Home and End in each terminal's spelling", () => {
+  expect(keys("\x1b[H\x1bOH\x1b[1~\x1b[7~").map(k => k.kind)).toEqual(Array(4).fill("home"));
+  expect(keys("\x1b[F\x1bOF\x1b[4~\x1b[8~").map(k => k.kind)).toEqual(Array(4).fill("end"));
+});
+
 test("named keys, text and pastes", () => {
   expect(keys("\x1b[5~\x1b[6~\x1b[A\x1bOB\r\t\x7f\x03")).toEqual([
     { kind: "pageup" },
