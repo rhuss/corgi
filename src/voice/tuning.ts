@@ -16,13 +16,21 @@ export class Tuning {
   private readonly recording: RecordingSettings;
   private readonly shared: Shared;
   private mode: "dictation" | "recording" = "dictation";
+  private readonly warn: (text: string) => void;
   /** Applies nothing: main.ts builds the segmenter with the dictation values and
    * the shared timings, which is the state this starts in. */
   constructor(
     target: Target,
-    init: { dictation: { threshold: number; silence: number }; recording: RecordingSettings; shared: Shared },
+    init: {
+      dictation: { threshold: number; silence: number };
+      recording: RecordingSettings;
+      shared: Shared;
+      /** Says when a change leaves every passage its own contribution. */
+      warn?: (text: string) => void;
+    },
   ) {
     this.target = target;
+    this.warn = init.warn ?? (() => {});
     this.dictation = { ...init.dictation };
     this.recording = { ...init.recording };
     this.shared = { ...init.shared };
@@ -67,8 +75,15 @@ export class Tuning {
   }
   /** Sets the active silence window, in seconds. */
   setSilence(seconds: number): void {
-    if (this.mode === "recording") this.recording.silence = seconds;
-    else this.dictation.silence = seconds;
+    if (this.mode === "recording") {
+      const { silence: before, pause_break } = this.recording;
+      this.recording.silence = seconds;
+      // As voice.json's check does at start, for a change made while recording.
+      if (before < pause_break && seconds >= pause_break)
+        this.warn(
+          `recording "pause_break" (${pause_break} s) is not longer than "silence" (${seconds} s), so every passage starts a new contribution`,
+        );
+    } else this.dictation.silence = seconds;
     this.target.setTiming("silence", seconds);
   }
   /** Sets one timing, in seconds: `silence` for the active set, the others for both. */

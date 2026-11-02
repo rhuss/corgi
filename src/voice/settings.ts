@@ -151,9 +151,12 @@ export function merge(settings: VoiceSettings, flags: VoiceFlags): VoiceSettings
  * refuses relative values.
  */
 export function transcriptsFolder(settings: VoiceSettings, env: NodeJS.ProcessEnv, cwd: string): string {
-  const home = () => env.HOME || homedir(),
-    given = settings.transcripts;
-  if (given !== null) return given.startsWith("~/") ? join(home(), given.slice(2)) : resolve(cwd, given);
+  const given = settings.transcripts;
+  if (given !== null) return given.startsWith("~/") ? join(home(env), given.slice(2)) : resolve(cwd, given);
   if (env.XDG_DATA_HOME) return join(env.XDG_DATA_HOME, "corgi", "transcripts");
-  return join(home(), ".local", "share", "corgi", "transcripts");
+  return join(home(env), ".local", "share", "corgi", "transcripts");
+}
+/** The home folder `~/` stands for: `$HOME`, else the account's. */
+export function home(env: NodeJS.ProcessEnv): string {
+  return env.HOME || homedir();
 }

@@ -20,36 +20,42 @@ export class Turns {
   /** Silence, in seconds, that starts a new contribution. */
   readonly pause_break: number;
   contributions: Contribution[] = [];
-  /** The next passage starts a contribution. */
-  private fresh = true;
+  /** Breaks still to come, as speech times (ms): the next passage spoken at
+   * or after one starts a contribution. The first passage always does. */
+  private breaks: number[] = [-Infinity];
   private last_end = 0;
-  /** The last written passage was cut at the cap. */
-  private last_capped = false;
+  /** Where the cap cut the last written passage (ms), or null. */
+  private last_cut: number | null = null;
   constructor(pause_break: number) {
     this.pause_break = pause_break;
   }
-  /** The next passage starts a contribution (start and resume). */
-  reset(): void {
-    this.fresh = true;
+  /** The first passage spoken at or after `at` (ms) starts a contribution,
+   * whenever it is written: a resume breaks by when speech began, so a
+   * passage said before the pause and written after the resume does not
+   * take the break. */
+  breakAt(at: number): void {
+    this.breaks.push(at);
   }
   /** Adds a written passage; times in ms. Returns whether it starts a contribution.
-   * A passage that `continues` the cut of the last written one has no pause
-   * before it. When either side of a cut was not written, the pause is
-   * measured from the last written passage as usual. */
+   * A passage that `continues` the very cut of the last written one (it
+   * starts where that one was cut) has no pause before it. When either side
+   * of a cut was not written, the pause is measured from the last written
+   * passage as usual. */
   next(p: {
     text: string;
     speech_start: number;
     speech_end: number;
-    capped: boolean;
+    cut_at: number | null;
     continues: boolean;
     dash: boolean;
   }): boolean {
-    const carried = p.continues && this.last_capped,
+    const carried = p.continues && p.speech_start === this.last_cut,
       gap = !carried && p.speech_start - this.last_end > this.pause_break * 1000;
-    const starts = this.fresh || p.dash || gap || this.contributions.length === 0;
-    this.fresh = false;
+    const due = this.breaks.some(at => p.speech_start >= at);
+    if (due) this.breaks = this.breaks.filter(at => p.speech_start < at);
+    const starts = due || p.dash || gap;
     this.last_end = p.speech_end;
-    this.last_capped = p.capped;
+    this.last_cut = p.cut_at;
     if (starts) this.contributions.push({ started_at: p.speech_start, texts: [p.text] });
     else this.contributions[this.contributions.length - 1].texts.push(p.text);
     return starts;

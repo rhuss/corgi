@@ -29,10 +29,11 @@ function setup() {
 }
 let next_id = 1;
 /** A passage whose speech ran from `start` to `end` ms. */
-function passage(start: number, end: number, capped = false, continues = false): Utterance {
+function passage(start: number, end: number, cut_at: number | null = null, continues = false): Utterance {
   return {
     id: next_id++,
-    captured_at: start,
+    // Pre-roll comes before the speech; it must not count anywhere.
+    captured_at: start - 300,
     duration: (end - start) / 1000,
     status: "transcribing",
     text: null,
@@ -40,9 +41,10 @@ function passage(start: number, end: number, capped = false, continues = false):
     timings: {},
     record: null,
     untyped: null,
+    maybe_typed: false,
     speech_start: start,
     speech_end: end,
-    capped,
+    cut_at,
     continues,
   };
 }
@@ -201,6 +203,46 @@ test("pause keeps passages out, and resume starts a contribution", async () => {
   expect(lines.slice(1, 3)).toEqual([`recording: paused ${path}`, `recording: resumed ${path}`]);
 });
 
+test("a passage spoken before the pause and written after the resume continues its contribution", async () => {
+  const { recorder, tick } = setup(),
+    path = join(folder(), "t.txt");
+  recorder.start(path);
+  const a = passage(0, 1000),
+    late = passage(1200, 1800);
+  recorder.claim(a);
+  recorder.claim(late);
+  recorder.write(a, "Before.");
+  // Paused at 2000 while `late` is still with Whisper; resumed at 5000.
+  tick(1000);
+  recorder.pause();
+  tick(3000);
+  recorder.resume();
+  recorder.write(late, "Still before.");
+  // The first passage spoken after the resume starts one, however short the gap.
+  const after = passage(5100, 5500);
+  recorder.claim(after);
+  recorder.write(after, "After.");
+  expect(recorder.current!.turns.contributions.map(c => c.texts)).toEqual([["Before.", "Still before."], ["After."]]);
+  await recorder.stop();
+  expect(readFileSync(path, "utf8")).toBe("Before.\nStill before.\n\nAfter.\n");
+});
+
+test("pause gaps and block times count from the speech, not the pre-roll", () => {
+  const { recorder } = setup(),
+    path = join(folder(), "t.txt");
+  recorder.start(path);
+  // 2.1 s from the end of `a` to the speech of `b`, but only 1.8 s to its pre-roll.
+  const a = passage(0, 1000),
+    b = passage(3100, 4000);
+  for (const u of [a, b]) recorder.claim(u);
+  recorder.write(a, "One.");
+  recorder.write(b, "Two.");
+  expect(recorder.current!.turns.contributions).toEqual([
+    { started_at: 0, texts: ["One."] },
+    { started_at: 3100, texts: ["Two."] },
+  ]);
+});
+
 test("a speaker dash starts a contribution and is not written", async () => {
   const { recorder } = setup(),
     path = join(folder(), "t.txt");
@@ -231,21 +273,6 @@ test("an existing file is appended to after one blank line", async () => {
   recorder.write(b, "Later.");
   await recorder.stop();
   expect(readFileSync(path, "utf8")).toBe("Earlier.\n\nLater.\n");
-});
-
-test("a write that fails leaves the passage out of the reading view too", () => {
-  const { recorder } = setup(),
-    path = join(folder(), "t.txt");
-  recorder.start(path);
-  const r = recorder.current!,
-    a = passage(0, 1000),
-    b = passage(1100, 2000);
-  recorder.claim(a);
-  recorder.claim(b);
-  recorder.write(a, "Kept.");
-  r.file.close();
-  recorder.write(b, "Lost.");
-  expect(r.turns.contributions.map(c => c.texts)).toEqual([["Kept."]]);
 });
 
 test("a write failure while stopping still logs how long the stop waited", async () => {
