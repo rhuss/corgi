@@ -184,8 +184,15 @@ export type Options = {
   stopRecording?: () => void;
 };
 /** The filename prompt: the name as typed; `fresh` while it is still the
- * suggestion, which the first typed character replaces. */
-type Prompt = { name: string; fresh: boolean };
+ * suggestion, which the first typed character replaces. Keys arrive as
+ * latin1 bytes, which `decoder` turns back into UTF-8 text. `hint` is the
+ * line under the name, worked out once per name, not on every frame. */
+type Prompt = {
+  name: string;
+  fresh: boolean;
+  decoder: TextDecoder;
+  hint: { name: string; style: string; text: string } | null;
+};
 type Picker = { devices: Device[]; choice: number; loading: boolean; notice?: string };
 /** A timing's dropdown, opened by a click on it, below its value at `y`, `x`. */
 type Menu = { name: keyof Timing; values: number[]; choice: number; y: number; x: number };
@@ -561,14 +568,17 @@ export class VoiceUi {
       name = "…" + chars.join("");
     }
     out += at(top + 2, left + 2) + (p.fresh ? focused + name : text + name + accent + "▏") + reset;
-    const where = this.resolveName(p.name),
-      [style, hint] =
-        "error" in where
-          ? [warm, where.error]
-          : transcript.exists(where.path)
-            ? [warm, `appends to the existing file: ${where.path}`]
-            : [quiet, where.path];
-    out += at(top + 3, left + 2) + style + ellipsis(hint, room) + reset;
+    if (p.hint?.name !== p.name) {
+      const where = this.resolveName(p.name),
+        [style, hint] =
+          "error" in where
+            ? [warm, where.error]
+            : transcript.exists(where.path)
+              ? [warm, `appends to the existing file: ${where.path}`]
+              : [quiet, where.path];
+      p.hint = { name: p.name, style, text: hint.replace(/[\x00-\x1f\x7f-\x9f]/g, " ") };
+    }
+    out += at(top + 3, left + 2) + p.hint.style + ellipsis(p.hint.text, room) + reset;
     out += at(top + 5, left + 2) + quiet + ellipsis("enter start  esc cancel", room) + reset;
     return out;
   }
@@ -597,8 +607,11 @@ export class VoiceUi {
       case "ctrl":
         if (key.key === "u") edit("");
         return;
-      case "text":
-        return edit((p.fresh ? "" : p.name) + key.text.replace(/[\x00-\x1f\x7f-\x9f]/g, ""));
+      case "text": {
+        // A character can arrive split across keys; the decoder holds its start.
+        const typed = p.decoder.decode(Buffer.from(key.text, "latin1"), { stream: true });
+        return edit((p.fresh ? "" : p.name) + typed.replace(/[\x00-\x1f\x7f-\x9f]/g, ""));
+      }
     }
   }
   /** r: the filename prompt without a recording, else pause or resume. */
@@ -612,7 +625,7 @@ export class VoiceUi {
       case "paused":
         return recorder.resume();
       default:
-        this.prompt = { name: transcript.defaultName(new Date()), fresh: true };
+        this.prompt = { name: transcript.defaultName(new Date()), fresh: true, decoder: new TextDecoder(), hint: null };
     }
   }
   private drawHelp(cols: number, rows: number, at: (y: number, x: number) => string): string {
@@ -940,7 +953,11 @@ export async function run(ui: VoiceUi, stop: Promise<void>, cleanup: () => Promi
     process.stdout.write("\x1b[2J");
     paint();
   };
+  // A signal tears down at once, and the stop it settles must not do it again.
+  let restored = false;
   const restore = () => {
+    if (restored) return;
+    restored = true;
     clearInterval(timer);
     clearTimeout(flush);
     process.stdin.off("data", onData);

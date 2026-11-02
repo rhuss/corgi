@@ -18,17 +18,37 @@ export function clock(ms: number): string {
   const d = new Date(ms);
   return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2, "0")).join(":");
 }
-/** `text` in lines of at most `width` cells, broken between words. */
+/** `text` in lines of at most `width` cells, broken between words, and
+ * inside a word only when it is wider than a line (as text without spaces). */
 export function wrap(text: string, width: number): string[] {
   const out: string[] = [];
   let line = "";
-  for (const word of text.split(" ")) {
-    if (line && displayWidth(line) + 1 + displayWidth(word) > width) {
-      out.push(line);
-      line = word;
-    } else line = line ? `${line} ${word}` : word;
-  }
+  for (const word of text.split(" "))
+    for (const piece of pieces(word, width)) {
+      if (line && displayWidth(line) + 1 + displayWidth(piece) > width) {
+        out.push(line);
+        line = piece;
+      } else line = line ? `${line} ${piece}` : piece;
+    }
   return line ? [...out, line] : out;
+}
+/** `word` cut into pieces of at most `width` cells. */
+function pieces(word: string, width: number): string[] {
+  if (displayWidth(word) <= width) return [word];
+  const out: string[] = [];
+  let piece = "",
+    cells = 0;
+  for (const ch of word) {
+    const w = displayWidth(ch);
+    if (piece && cells + w > width) {
+      out.push(piece);
+      piece = "";
+      cells = 0;
+    }
+    piece += ch;
+    cells += w;
+  }
+  return piece ? [...out, piece] : out;
 }
 /** Blocks drawn for a width; a block is drawn again when its passages or the width change. */
 type Block = { texts: number; width: number; lines: Line[] };

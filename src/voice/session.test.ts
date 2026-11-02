@@ -666,6 +666,40 @@ test("a mute in the middle of a passage still writes it, untyped", async () => {
   expect(transcript(path)).toBe("half muted\n");
 });
 
+test("speech that began muted stays untyped after an unmute", async () => {
+  const { recorder: r, path } = recorder(),
+    { s, link } = session(["private aside"], { recorder: r });
+  await s.connect();
+  r.start(path);
+  s.setMuted(true);
+  const pcm = shapes.speech();
+  begin(s, pcm);
+  s.setMuted(false);
+  end(s, pcm);
+  await until(() => s.history[0]?.status === "recorded");
+  expect(statuses(s)).toEqual([["recorded", "muted"]]);
+  expect(link.calls).toEqual([]);
+  expect(transcript(path)).toBe("private aside\n");
+});
+
+test("a recorded passage that ends while the link is down is typed once it is back", async () => {
+  const { recorder: r, path } = recorder();
+  // Each connection gets a fresh link; `current` is the one in use.
+  let current = new FakeLink();
+  const { s, whisper } = session(["back again"], { links: async () => (current = new FakeLink()), recorder: r });
+  let open!: () => void;
+  whisper.gate = new Promise(resolve => (open = resolve));
+  await s.connect();
+  current.events.emitClosed("runtime_gone");
+  r.start(path);
+  speak(s);
+  await until(() => s.link_state === "connected");
+  open();
+  await until(() => s.history[0]?.status === "delivered");
+  expect(current.calls.map(c => c.value)).toEqual(["back again"]);
+  expect(transcript(path)).toBe("back again\n");
+});
+
 test("a viewer that leaves mid-passage leaves it written and untyped", async () => {
   const { recorder: r, path } = recorder(),
     link = new FakeLink(),

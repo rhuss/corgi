@@ -209,7 +209,8 @@ silence) are not written.
 While a recording runs, voice mode keeps listening when muted, with no Corgi
 window attached, or with no runtime to reach. It writes the passages and
 doesn't type them; the same goes for a passage you were saying when you muted
-or the viewer left. Without a recording, or with the recording paused, muting
+or the viewer left, and for one you started while muted, even if you unmute
+before it ends. Without a recording, or with the recording paused, muting
 drops the audio.
 
 While paused, passages still show in the history and are typed as usual, but

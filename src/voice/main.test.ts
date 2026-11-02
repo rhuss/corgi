@@ -1,5 +1,11 @@
-import { test, expect } from "bun:test";
-import { flags, message } from "./main";
+import { test, expect, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { flags, message, quitter, lateMessage } from "./main";
+import { Recorder } from "./recorder";
+import type { Tuning } from "./tuning";
+import type { Utterance } from "./session";
 import * as settings from "./settings";
 import { exitError } from "./bridge";
 import * as config from "../build_config";
@@ -97,4 +103,73 @@ test("the transcript folder is on this machine, whatever --ssh names", () => {
   expect(folder(["--ssh", "devbox", "--transcripts", "calls"])).toBe("/work/calls");
   expect(folder(["--ssh", "devbox"])).toBe("/home/me/.local/share/corgi/transcripts");
   expect(folder([])).toBe(folder(["--ssh", "devbox"]));
+});
+
+const dirs: string[] = [];
+afterEach(() => {
+  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+/** A recorder running into a fresh file, with one passage still being transcribed. */
+function busy() {
+  const dir = mkdtempSync(join(tmpdir(), "corgi-quit-")),
+    tuning = { pause_break: 2, begin: () => {}, end: () => {} } as unknown as Tuning,
+    recorder = new Recorder({ tuning, now: () => 0 }),
+    path = join(dir, "t.txt");
+  dirs.push(dir);
+  recorder.start(path);
+  const u = { speech_start: 0, speech_end: 1000, continues: false, record: null } as unknown as Utterance;
+  recorder.claim(u);
+  const view = { finishing: false };
+  let quits = 0;
+  const q = quitter(
+    recorder,
+    () => view,
+    () => quits++,
+  );
+  return { recorder, path, u, view, q, quits: () => quits };
+}
+
+test("quitting with a recording waits for its transcript, then quits", async () => {
+  const { recorder, u, view, q, quits } = busy();
+  q.press();
+  expect(view.finishing).toBe(true);
+  expect(recorder.current).toBeNull();
+  await Bun.sleep(5);
+  expect(quits()).toBe(0);
+  recorder.write(u, "Last words.");
+  await Bun.sleep(0);
+  expect(quits()).toBe(1);
+  expect(q.finish().map(r => r.late)).toEqual([0]);
+});
+
+test("quitting again ends the wait, and the passage left out is reported", async () => {
+  const { path, view, q, quits } = busy();
+  q.press();
+  q.press();
+  expect(quits()).toBe(1);
+  expect(view.finishing).toBe(true);
+  const finished = q.finish();
+  expect(finished).toEqual([{ path, late: 1 }]);
+  await Bun.sleep(0);
+  // The first wait ends too, without reporting it twice.
+  expect(finished).toHaveLength(1);
+  expect(lateMessage(path, 1)).toBe(
+    `corgi: 1 passage of ${path} did not finish in time and is not in the transcript\n`,
+  );
+  expect(lateMessage("/t\x1b]0;x\x07.txt", 2)).toBe(
+    "corgi: 2 passages of /t ]0;x .txt did not finish in time and are not in the transcript\n",
+  );
+});
+
+test("quitting without a recording quits at once", () => {
+  const recorder = new Recorder({ tuning: {} as Tuning, now: () => 0 }),
+    view = { finishing: false };
+  let quits = 0;
+  quitter(
+    recorder,
+    () => view,
+    () => quits++,
+  ).press();
+  expect(quits).toBe(1);
+  expect(view.finishing).toBe(false);
 });

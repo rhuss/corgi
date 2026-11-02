@@ -76,4 +76,7 @@ test("a new recording's contributions start a fresh cache", () => {
 test("clock and wrap", () => {
   expect(clock(at(7, 5, 9))).toBe("07:05:09");
   expect(wrap("a bb ccc dddd", 6)).toEqual(["a bb", "ccc", "dddd"]);
+  // A word wider than a line is cut, by cells: CJK characters are two wide.
+  expect(wrap("ok abcdefghij", 4)).toEqual(["ok", "abcd", "efgh", "ij"]);
+  expect(wrap("今日は会議があります", 6)).toEqual(["今日は", "会議が", "ありま", "す"]);
 });

@@ -26,12 +26,22 @@ export type Utterance = {
   timings: { transcribe_ms?: number; deliver_ms?: number };
   /** The transcript recording this passage goes to, decided when its speech ended. */
   record: Recording | null;
-  /** Whether it may still be typed. */
-  type: boolean;
-  /** When its loud audio began and ended, and whether the cap cut it. */
+  /** Why it is no longer typed; null while it may still be. */
+  untyped: Untyped | null;
+  /** When its loud audio began and ended, whether the cap cut it, and whether
+   * it carries on such a cut. */
   speech_start: number;
   speech_end: number;
   capped: boolean;
+  continues: boolean;
+};
+/** Why a passage is not typed. */
+export type Untyped = "muted" | "no_viewer" | "backlog";
+/** What the history says for each, after "recorded, not typed" or "discarded". */
+const untyped_reason: Record<Untyped, string> = {
+  muted: "muted",
+  no_viewer: "no viewer attached",
+  backlog: "backlog",
 };
 export type LinkState = "connecting" | "connected" | "lost" | "refused" | "closed";
 export type Unavailable = MicProblem | "server_down";
@@ -209,6 +219,8 @@ export class VoiceSession {
     for (const segment of done) this.segmented(segment);
     if (this.deps.segmenter.recording && !this.current) {
       this.current = this.utterance("recording");
+      // Speech that began muted stays untyped, even if unmuted before it ends.
+      if (this.muted) this.untype(this.current, "muted");
       this.changed();
     } else if (!this.deps.segmenter.recording && this.current) {
       // Too little speech to count.
@@ -228,10 +240,11 @@ export class VoiceSession {
       reason: null,
       timings: {},
       record: null,
-      type: true,
+      untyped: null,
       speech_start: 0,
       speech_end: 0,
       capped: false,
+      continues: false,
     };
     this.history.push(u);
     if (this.history.length > 500) this.history.splice(0, this.history.length - 500);
@@ -245,18 +258,14 @@ export class VoiceSession {
     u.speech_start = segment.speech_start;
     u.speech_end = segment.speech_end;
     u.capped = segment.capped;
+    u.continues = segment.continues;
     this.deps.recorder?.claim(u);
     if (!u.record && (this.muted || !this.viewer))
       return this.finish(u, this.muted ? "muted" : "discarded", this.muted ? null : "no viewer");
-    // A recorded passage is written whether or not it can be typed.
-    const untyped = this.muted
-      ? "muted"
-      : !this.viewer
-        ? "no viewer attached"
-        : this.link_state !== "connected"
-          ? "not connected"
-          : null;
-    if (u.record && untyped) this.untype(u, untyped);
+    // A recorded passage is written whether or not it can be typed; the link
+    // is checked when it is typed, as for any passage.
+    const why: Untyped | null = this.muted ? "muted" : !this.viewer ? "no_viewer" : null;
+    if (u.record && why) this.untype(u, why);
     // Speech this far behind Whisper or the runtime is not kept on top; a
     // recorded passage is still written, only not typed.
     if (this.pending >= max_backlog) {
@@ -268,10 +277,10 @@ export class VoiceSession {
     this.transcriptions = this.transcriptions.then(() => this.transcribe(u, segment));
   }
   /** `u` is no longer typed, for `why`; the first reason stays. */
-  private untype(u: Utterance, why: string): void {
-    if (!u.type) return;
-    u.type = false;
-    u.reason = why;
+  private untype(u: Utterance, why: Untyped): void {
+    if (u.untyped) return;
+    u.untyped = why;
+    u.reason = untyped_reason[why];
   }
   /** A recording is running, so speech is heard even when it cannot be typed. */
   private get recordingRuns(): boolean {
@@ -313,7 +322,7 @@ export class VoiceSession {
   }
   private async deliver(u: Utterance): Promise<void> {
     if (u.status !== "transcribing") return;
-    if (!u.type) return this.finish(u, ...this.untyped(u, u.reason ?? "muted"));
+    if (u.untyped) return this.finish(u, ...this.untypedEnd(u, u.untyped));
     const link = this.link;
     if (!link || this.link_state !== "connected")
       return this.finish(u, u.record ? "recorded" : "failed", "not connected");
@@ -336,9 +345,10 @@ export class VoiceSession {
     }
   }
   /** How a passage that is not typed ends: recorded when it was written. */
-  private untyped(u: Utterance, why: string): [UtteranceStatus, string | null] {
-    if (u.record) return ["recorded", why];
-    return why === "muted" ? ["muted", null] : ["discarded", why];
+  private untypedEnd(u: Utterance, why: Untyped): [UtteranceStatus, string | null] {
+    if (u.record) return ["recorded", untyped_reason[why]];
+    if (why === "muted") return ["muted", null];
+    return ["discarded", why === "no_viewer" ? "no viewer" : untyped_reason[why]];
   }
   private finish(u: Utterance, status: UtteranceStatus, why: string | null): void {
     u.status = status;
@@ -392,7 +402,7 @@ export class VoiceSession {
   /** A viewer attached or went away; what is said meanwhile has nowhere to go. */
   private applyViewer(state: Seen): void {
     if (this.viewer === state.viewer && this.focus === state.focus) return;
-    if (this.viewer && !state.viewer) this.discard("discarded", "no viewer", "no viewer attached");
+    if (this.viewer && !state.viewer) this.discard("discarded", "no viewer", "no_viewer");
     this.viewer = state.viewer;
     this.focus = state.focus;
     this.changed();
@@ -407,14 +417,14 @@ export class VoiceSession {
   /** Drops what was not yet typed. A passage for a transcript is still
    * written, only not typed (for `untyped`); while a recording runs, the
    * passage in progress goes on, to be written when it ends. */
-  private discard(status: "muted" | "discarded", why: string | null, untyped: string): void {
+  private discard(status: "muted" | "discarded", why: string | null, untyped: Untyped): void {
     const listening = this.recordingRuns;
     if (!listening) {
       this.deps.segmenter.abort();
       this.current = null;
     } else if (this.current) this.untype(this.current, untyped);
     for (const u of this.history)
-      if (u.record && (u.status === "transcribing" || u.status === "delivering")) this.untype(u, untyped);
+      if (u.record && u.status === "transcribing") this.untype(u, untyped);
       else if (u.status === "transcribing" || (u.status === "recording" && !listening)) {
         u.status = status;
         u.reason = why;

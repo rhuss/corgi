@@ -7,7 +7,8 @@ import * as level from "./level";
  * - `speech_start`: the first loud frame, without pre-roll; after a cut at the
  *   cap, the first frame after the cut;
  * - `speech_end`: the end of the last loud frame, without the quiet after it;
- * - `capped`: cut at the cap, so the next segment carries on the same speech. */
+ * - `capped`: cut at the cap, so the next segment carries on the same speech;
+ * - `continues`: starts at such a cut, carrying on the previous segment. */
 export type Segment = {
   pcm: Int16Array;
   started_at: number;
@@ -15,6 +16,7 @@ export type Segment = {
   speech_start: number;
   speech_end: number;
   capped: boolean;
+  continues: boolean;
 };
 /** The times, in seconds, that start and end an utterance:
  * - `silence`: the pause that ends it;
@@ -52,6 +54,8 @@ export class Segmenter {
   private origin = 0;
   /** Frames before the first loud one: the pre-roll, none after a cut. */
   private lead = 0;
+  /** The utterance in progress began at a cut at the cap. */
+  private continued = false;
   private cap_frames = max_cap_frames;
   private active = false;
   constructor(opts: { threshold: number; timing?: Partial<Timing>; now: () => number }) {
@@ -99,6 +103,7 @@ export class Segmenter {
       this.active = true;
       this.started_at = this.origin = this.now() - this.preroll.length * frame_ms;
       this.lead = this.preroll.length;
+      this.continued = false;
       this.frames = this.preroll;
       this.preroll = [];
     }
@@ -128,6 +133,7 @@ export class Segmenter {
       this.started_at = this.now();
       this.origin += taken * frame_ms;
       this.lead = 0;
+      this.continued = true;
       return done;
     }
     return [];
@@ -161,6 +167,7 @@ export class Segmenter {
         speech_start: this.origin + this.lead * frame_ms,
         speech_end: this.origin + loud_frames * frame_ms,
         capped,
+        continues: this.continued,
       },
     ];
   }

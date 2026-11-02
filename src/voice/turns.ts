@@ -23,6 +23,7 @@ export class Turns {
   /** The next passage starts a contribution. */
   private fresh = true;
   private last_end = 0;
+  /** The last written passage was cut at the cap. */
   private last_capped = false;
   constructor(pause_break: number) {
     this.pause_break = pause_break;
@@ -31,9 +32,20 @@ export class Turns {
   reset(): void {
     this.fresh = true;
   }
-  /** Adds a written passage; times in ms. Returns whether it starts a contribution. */
-  next(p: { text: string; speech_start: number; speech_end: number; capped: boolean; dash: boolean }): boolean {
-    const gap = !this.last_capped && p.speech_start - this.last_end > this.pause_break * 1000;
+  /** Adds a written passage; times in ms. Returns whether it starts a contribution.
+   * A passage that `continues` the cut of the last written one has no pause
+   * before it. When either side of a cut was not written, the pause is
+   * measured from the last written passage as usual. */
+  next(p: {
+    text: string;
+    speech_start: number;
+    speech_end: number;
+    capped: boolean;
+    continues: boolean;
+    dash: boolean;
+  }): boolean {
+    const carried = p.continues && this.last_capped,
+      gap = !carried && p.speech_start - this.last_end > this.pause_break * 1000;
     const starts = this.fresh || p.dash || gap || this.contributions.length === 0;
     this.fresh = false;
     this.last_end = p.speech_end;
