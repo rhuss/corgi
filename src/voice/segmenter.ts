@@ -8,6 +8,7 @@ import * as level from "./level";
  *   cap, the first frame after the cut;
  * - `speech_end`: the end of the last loud frame, without the quiet after it;
  * - `capped`: cut at the cap, so the next segment carries on the same speech;
+ * - `cut_at`: where the cap cut it, which is the next segment's `speech_start`;
  * - `continues`: starts at such a cut, carrying on the previous segment. */
 export type Segment = {
   pcm: Int16Array;
@@ -16,6 +17,7 @@ export type Segment = {
   speech_start: number;
   speech_end: number;
   capped: boolean;
+  cut_at: number | null;
   continues: boolean;
 };
 /** The times, in seconds, that start and end an utterance:
@@ -167,6 +169,8 @@ export class Segmenter {
         speech_start: this.origin + this.lead * frame_ms,
         speech_end: this.origin + loud_frames * frame_ms,
         capped,
+        // Computed as the next segment's start is, so the two compare equal.
+        cut_at: capped ? this.origin + frames.length * frame_ms : null,
         continues: this.continued,
       },
     ];

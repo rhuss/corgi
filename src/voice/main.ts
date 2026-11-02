@@ -1,7 +1,6 @@
 //! `corgi voice` and `corgi voice setup`: voice mode on the machine with the
 //! microphone, dictating into a local runtime or one over SSH.
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import * as errors from "../errors";
 import * as log from "../log";
@@ -180,10 +179,13 @@ async function voice(
       dictation: { threshold: s.threshold, silence: s.silence },
       recording: s.recording,
       shared: { burst: s.burst, pre_roll: s.pre_roll, min_speech: s.min_speech },
+      warn: text => recorder.notice("error", text),
     }),
     recorder = new Recorder({ tuning, now: Date.now, log: line => logger.info(line) }),
     folder = settings.transcriptsFolder(s, process.env, process.cwd()),
-    home = process.env.HOME || homedir();
+    home = settings.home(process.env),
+    // The one place a typed transcript name becomes a file.
+    resolveName = (name: string) => transcript.resolve(name, folder, home);
   // The server starts after the first connection, so a refusal starts nothing.
   let server: Server | null = null,
     restarting = false;
@@ -325,12 +327,8 @@ async function voice(
     quit: quitting.press,
     recorder,
     tuning,
-    folder,
-    home,
-    startRecording: name => {
-      const where = transcript.resolve(name, folder, home);
-      return "error" in where ? where : recorder.start(where.path);
-    },
+    resolveName,
+    startRecording: path => recorder.start(path),
     stopRecording: () => void recorder.stop(),
   });
   // A signal ends voice mode at once; the transcript is closed first.
