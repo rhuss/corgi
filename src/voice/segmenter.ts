@@ -2,7 +2,20 @@
 //! frames, so a stream fed faster than real time segments the same way.
 import * as level from "./level";
 
-export type Segment = { pcm: Int16Array; started_at: number; duration: number };
+/** An utterance. Times are ms on the `now()` clock, counted in frames from the
+ * utterance's first frame:
+ * - `speech_start`: the first loud frame, without pre-roll; after a cut at the
+ *   cap, the first frame after the cut;
+ * - `speech_end`: the end of the last loud frame, without the quiet after it;
+ * - `capped`: cut at the cap, so the next segment carries on the same speech. */
+export type Segment = {
+  pcm: Int16Array;
+  started_at: number;
+  duration: number;
+  speech_start: number;
+  speech_end: number;
+  capped: boolean;
+};
 /** The times, in seconds, that start and end an utterance:
  * - `silence`: the pause that ends it;
  * - `pre_roll`: audio kept from before it started, so the first syllable stays;
@@ -13,7 +26,8 @@ export type Timing = { silence: number; pre_roll: number; min_speech: number; bu
 export const default_timing: Timing = { silence: 2.5, pre_roll: 0.3, min_speech: 0.2, burst: 0.1 };
 
 const frame_ms = 20,
-  cap_frames = 30_000 / frame_ms,
+  /** The longest utterance, the transcription window. */
+  max_cap_frames = 30_000 / frame_ms,
   /** What is kept of the quiet after the last burst. */
   trail_frames = 300 / frame_ms;
 /** `seconds` in whole frames, at least one. */
@@ -34,6 +48,11 @@ export class Segmenter {
   private run = 0;
   private tail = 0;
   private started_at = 0;
+  /** The time of the utterance's first frame, counted in frames across cuts. */
+  private origin = 0;
+  /** Frames before the first loud one: the pre-roll, none after a cut. */
+  private lead = 0;
+  private cap_frames = max_cap_frames;
   private active = false;
   constructor(opts: { threshold: number; timing?: Partial<Timing>; now: () => number }) {
     this.threshold = level.percentToRms(opts.threshold);
@@ -59,6 +78,11 @@ export class Segmenter {
     } else if (name === "min_speech") this.min_speech_frames = frames(seconds);
     else this.burst_frames = frames(seconds);
   }
+  /** The length, in seconds, at which an utterance is cut; never past the 30 s
+   * transcription window. */
+  setCap(seconds: number): void {
+    this.cap_frames = Math.min(max_cap_frames, frames(seconds));
+  }
   /** How far into the silence window the utterance in progress is, 0 to 1. */
   get pause(): number {
     return this.active ? Math.min(1, this.quiet / this.silence_frames) : 0;
@@ -73,7 +97,8 @@ export class Segmenter {
         return [];
       }
       this.active = true;
-      this.started_at = this.now() - this.preroll.length * frame_ms;
+      this.started_at = this.origin = this.now() - this.preroll.length * frame_ms;
+      this.lead = this.preroll.length;
       this.frames = this.preroll;
       this.preroll = [];
     }
@@ -89,16 +114,20 @@ export class Segmenter {
       this.quiet++;
     }
     if (this.quiet >= this.silence_frames) {
+      const loud_frames = this.frames.length - this.tail;
       // Keep 0.3 s of what followed the last burst.
       this.frames.length -= Math.max(0, this.tail - trail_frames);
-      const done = this.take();
+      const done = this.take(loud_frames, false);
       this.active = false;
       return done;
     }
-    if (this.frames.length >= cap_frames) {
+    if (this.frames.length >= this.cap_frames) {
       // A long utterance goes out at the cap; listening carries straight on.
-      const done = this.take();
+      const taken = this.frames.length,
+        done = this.take(taken - this.tail, true);
       this.started_at = this.now();
+      this.origin += taken * frame_ms;
+      this.lead = 0;
       return done;
     }
     return [];
@@ -110,7 +139,9 @@ export class Segmenter {
     this.speech = this.quiet = this.run = this.tail = 0;
     this.active = false;
   }
-  private take(): Segment[] {
+  /** The utterance so far; `loud_frames` counts its frames up to the end of the
+   * last loud one. */
+  private take(loud_frames: number, capped: boolean): Segment[] {
     const frames = this.frames,
       speech = this.speech;
     this.frames = [];
@@ -122,6 +153,15 @@ export class Segmenter {
       pcm.set(f, at);
       at += f.length;
     }
-    return [{ pcm, started_at: this.started_at, duration: (frames.length * frame_ms) / 1000 }];
+    return [
+      {
+        pcm,
+        started_at: this.started_at,
+        duration: (frames.length * frame_ms) / 1000,
+        speech_start: this.origin + this.lead * frame_ms,
+        speech_end: this.origin + loud_frames * frame_ms,
+        capped,
+      },
+    ];
   }
 }
