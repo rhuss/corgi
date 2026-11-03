@@ -24,8 +24,14 @@ function setup() {
       begin: () => void calls.push("begin"),
       end: () => void calls.push("end"),
     } as unknown as Tuning,
-    recorder = new Recorder({ tuning, now: () => now, log: line => lines.push(line) });
-  return { recorder, calls, lines, tick: (ms: number) => (now += ms) };
+    active: boolean[] = [],
+    recorder = new Recorder({
+      tuning,
+      now: () => now,
+      log: line => lines.push(line),
+      active: on => void active.push(on),
+    });
+  return { recorder, calls, lines, active, tick: (ms: number) => (now += ms) };
 }
 let next_id = 1;
 /** A passage whose speech ran from `start` to `end` ms. */
@@ -143,6 +149,30 @@ test("a write failure closes the recording and restores dictation timing", () =>
   expect(recorder.notices.at(-1)?.text).toStartWith("recording stopped: ");
   expect(lines.at(-1)).toStartWith(`recording: write failed ${path}: `);
   expect(lines.join("\n")).not.toContain("Lost words");
+});
+
+test("voice mode hears when a recording begins and ends, by a stop or a write failure, once each", () => {
+  const { recorder, active } = setup(),
+    dir = folder();
+  // A refused start begins nothing.
+  recorder.start(join(dir, "missing", "\0bad"));
+  expect(active).toEqual([]);
+  recorder.start(join(dir, "a.txt"));
+  recorder.pause();
+  recorder.resume();
+  expect(active).toEqual([true]);
+  void recorder.stop();
+  expect(recorder.stop()).toBeNull();
+  expect(active).toEqual([true, false]);
+  recorder.start(join(dir, "b.txt"));
+  const u = passage(0, 1000);
+  recorder.claim(u);
+  recorder.current!.file.close();
+  recorder.write(u, "Lost words.");
+  expect(active).toEqual([true, false, true, false]);
+  // Quitting finds nothing more to end.
+  recorder.finish();
+  expect(active).toEqual([true, false, true, false]);
 });
 
 test("a close that fails is reported, and the stop still settles", async () => {
