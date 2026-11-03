@@ -94,7 +94,8 @@ the history says "focused pane is the voice pane".
 | --- | --- |
 | `m` | Mute or unmute |
 | `?` | Explain the options and how each changes what becomes text |
-| `+` / `-` | Raise or lower the threshold by 2 (or turn the mouse wheel; in the reading view it scrolls instead) |
+| `+` / `-` | Raise or lower the threshold by 2 (or turn the mouse wheel over the top part, above the line under the options) |
+| Mouse wheel below that line | Scroll the history, or the reading view, by three rows |
 | `f` | Turn the speech filter on or off; restarts whisper-server, about a second, and brings it back after a crash |
 | `d` | Pick another microphone |
 | `r` | Start a recording, or pause and resume it |
@@ -276,7 +277,8 @@ again.
 | Key | Does |
 | --- | --- |
 | `j` / `k`, `↓` / `↑` | Scroll by a line |
-| Mouse wheel | Scroll by three lines |
+| Mouse wheel, below the line under the options | Scroll by three lines |
+| Drag the scroll bar, or click its track | Scroll to that place |
 | `Ctrl+D` / `Ctrl+U` | Scroll by half a page |
 | `Ctrl+F` / `Ctrl+B`, `PgDn` / `PgUp` | Scroll by a page |
 | `g`, Home / `G`, End | Oldest / newest |

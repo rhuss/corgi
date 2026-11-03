@@ -24,6 +24,10 @@ export type Key =
   /** Ctrl and a letter, as `d` for Ctrl+D. */
   | { kind: "ctrl"; key: string }
   | { kind: "click"; x: number; y: number }
+  /** The pointer moved with the left button held, where the terminal reports motion (mode 1002). */
+  | { kind: "drag"; x: number; y: number }
+  /** The left button let go. */
+  | { kind: "release"; x: number; y: number }
   | { kind: "wheel"; dir: 1 | -1; x: number; y: number };
 
 const named: [string, Key["kind"]][] = [
@@ -65,6 +69,8 @@ export function keys(data: string): Key[] {
         x = Number(mouse[2]) - 1,
         y = Number(mouse[3]) - 1;
       if (mouse[4] === "M" && button === 0) out.push({ kind: "click", x, y });
+      else if (mouse[4] === "M" && button === 32) out.push({ kind: "drag", x, y });
+      else if (mouse[4] === "m" && button === 0) out.push({ kind: "release", x, y });
       else if (mouse[4] === "M" && (button === 64 || button === 65))
         out.push({ kind: "wheel", dir: button === 64 ? 1 : -1, x, y });
       i += mouse[0].length;
