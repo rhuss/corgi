@@ -62,7 +62,7 @@ const seconds = (v: number) => `${v} s`;
 const help_entries: [string, string][] = [
   [
     "threshold",
-    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel (which scrolls the reading view instead). Raise it in a noisy room; lower it when quiet words are missed. Changed during a recording, it is the recording's threshold, which later recordings keep.",
+    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel over the top part of the window (below the line under the options it scrolls). Raise it in a noisy room; lower it when quiet words are missed. Changed during a recording, it is the recording's threshold, which later recordings keep.",
   ],
   [
     "silence",
@@ -377,8 +377,11 @@ export class VoiceUi {
   /** The answer to the last key, until the next one. */
   private flash: string | null = null;
   private reader = new Reading();
-  /** The reading view's last frame, which its scroll keys move through. */
-  private reading_area = { lines: 0, height: 1 };
+  /** The reading view's last frame, which its scroll keys and its scroll bar
+   * move through: its lines, the rows it had from row `top`, and the bar's column. */
+  private reading_area = { lines: 0, height: 1, top: 0, bar_x: 0 };
+  /** While the scroll bar is dragged, the row of its thumb the pointer holds. */
+  private grab: number | null = null;
   device: string;
   /** What a click does, and where, from the last frame: the note and the mode
    * mute or unmute, an option opens its menu or switches. */
@@ -501,7 +504,7 @@ export class VoiceUi {
         max = Math.max(0, lines.length - height);
       if (r.top !== null && r.top >= max) r.top = null;
       const first = r.top ?? max;
-      this.reading_area = { lines: lines.length, height };
+      this.reading_area = { lines: lines.length, height, top, bar_x: cols - 1 };
       if (!lines.length) put(top, 1, quiet, "Nothing is written yet; what is recorded shows here.");
       lines.slice(first, first + height).forEach((l, i) => {
         if (!l.bar) return;
@@ -522,8 +525,7 @@ export class VoiceUi {
         if (r.latency) x += put(top + i, x, quiet, `(${r.latency}) `);
         put(top + i, x, r.style, r.label, cols - 2 - x);
       });
-      // No scroll bar: the history is a log, scrolled with the keys, and the
-      // wheel moves the threshold here.
+      // No scroll bar: the history is a log, scrolled with the keys and the wheel.
     }
     // The keys, most needed first; those that do not fit are left out whole.
     frame += at(rows - 1, 1);
@@ -814,6 +816,8 @@ export class VoiceUi {
     if (this.picker) return this.pickerKey(key);
     if (this.menu) return this.menuKey(key);
     if (this.help) return this.helpKey(key);
+    // Letting go ends a drag of the reading view's scroll bar, wherever it happens.
+    if (key.kind === "release") return void (this.grab = null);
     if (this.reading && this.readingKey(key)) return;
     const page = Math.max(1, rows - history_top - 3),
       back = (n: number) => void (this.scroll = Math.max(0, this.scroll + n));
@@ -837,8 +841,9 @@ export class VoiceUi {
         return;
       case "click":
         return this.hits.find(h => key.y === h.y && key.x >= h.x && key.x < h.x + h.width)?.act();
+      // Above the line under the options, the wheel moves the threshold; below it, it scrolls.
       case "wheel":
-        return this.nudge(key.dir);
+        return key.y < history_top - 1 ? this.nudge(key.dir) : back(key.dir > 0 ? 3 : -3);
       case "text":
         switch (key.text) {
           case "q":
@@ -908,9 +913,16 @@ export class VoiceUi {
       case "end":
         r.top = null;
         return true;
-      // The wheel scrolls the conversation here, three lines a notch; + and - still move the threshold.
+      // Below the line under the options the wheel scrolls the conversation,
+      // three lines a notch; above it, it moves the threshold, as + and - do.
       case "wheel":
-        return move(key.dir > 0 ? -3 : 3);
+        return key.y >= history_top - 1 && move(key.dir > 0 ? -3 : 3);
+      case "click":
+        return this.pressBar(key.x, key.y);
+      case "drag":
+        if (this.grab === null) return false;
+        this.dragBar(key.y);
+        return true;
       case "ctrl": {
         const n = { u: -half, d: half, b: -page, f: page }[key.key];
         if (n === undefined) return false;
@@ -933,6 +945,37 @@ export class VoiceUi {
         }
     }
     return false;
+  }
+  /** A press on the reading view's scroll bar: on the thumb it takes hold of
+   * it; elsewhere on the bar the thumb jumps there, held by its middle.
+   * False for a press anywhere else. */
+  private pressBar(x: number, y: number): boolean {
+    const { lines, height, top, bar_x } = this.reading_area,
+      max = Math.max(0, lines - height),
+      bar = thumb(height, lines, this.reading!.top ?? max);
+    // The column beside the bar counts too: it is one cell wide.
+    if (!bar || x < bar_x - 1 || y < top || y >= top + height) return false;
+    const on = y - top - bar.start;
+    if (on >= 0 && on < bar.len) this.grab = on;
+    else {
+      this.grab = Math.floor(bar.len / 2);
+      this.dragBar(y);
+    }
+    return true;
+  }
+  /** Moves the held thumb so its grabbed row is at `y`, and the view with it. */
+  private dragBar(y: number): void {
+    const r = this.reading!,
+      { lines, height, top } = this.reading_area,
+      max = Math.max(0, lines - height),
+      bar = thumb(height, lines, r.top ?? max);
+    if (!bar || this.grab === null) return;
+    const room = height - bar.len,
+      start = Math.max(0, Math.min(room, y - top - this.grab)),
+      first = room > 0 ? Math.round((start * max) / room) : 0;
+    // Leaving the bottom stops following, as scrolling up does.
+    if (r.top === null) r.seen = this.opts.recorder?.current?.turns.contributions.length ?? 0;
+    r.top = first >= max ? null : first;
   }
   private async switchFilter(): Promise<void> {
     if (this.filter === "switching…" || this.filter === "not installed") return;
@@ -973,8 +1016,8 @@ export class VoiceUi {
   }
 }
 
-const enter = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[2J",
-  leave = "\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l",
+const enter = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[2J",
+  leave = "\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l",
   hide = Buffer.from("\x1b[?25l");
 
 /** Runs `ui` in this process's terminal until `stop` resolves, then restores
