@@ -94,7 +94,7 @@ the history says "focused pane is the voice pane".
 | --- | --- |
 | `m` | Mute or unmute |
 | `?` | Explain the options and how each changes what becomes text |
-| `+` / `-` | Raise or lower the threshold by 2 (or turn the mouse wheel anywhere in the window) |
+| `+` / `-` | Raise or lower the threshold by 2 (or turn the mouse wheel; in the reading view it scrolls instead) |
 | `f` | Turn the speech filter on or off; restarts whisper-server, about a second, and brings it back after a crash |
 | `d` | Pick another microphone |
 | `r` | Start a recording, or pause and resume it |
@@ -275,11 +275,12 @@ again.
 | Key | Does |
 | --- | --- |
 | `j` / `k`, `↓` / `↑` | Scroll by a line |
+| Mouse wheel | Scroll by three lines |
 | `Ctrl+D` / `Ctrl+U` | Scroll by half a page |
 | `Ctrl+F` / `Ctrl+B`, `PgDn` / `PgUp` | Scroll by a page |
 | `g`, Home / `G`, End | Oldest / newest |
 
-The level meter and `T:` stay, and `m`, `+`/`-`, the wheel, `r`, `R` and `q`
+The level meter and `T:` stay, and `m`, `+`/`-`, `r`, `R` and `q`
 keep working.
 
 ## Remote runtimes

@@ -302,7 +302,8 @@ test("PgUp and PgDn page through the history", () => {
   session.history = Array.from({ length: 40 }, (_, i) => said(i + 1, "delivered", `line ${i + 1}`));
   let rows = screen(ui.draw(80, 20), 80, 20);
   expect(rows[17]).toContain("line 40");
-  expect(rows.some(r => r.includes("┃") && r.endsWith("┃"))).toBe(true);
+  // A log, scrolled with the keys: no scroll bar.
+  expect(rows.slice(9, 18).some(r => r.endsWith("┃"))).toBe(false);
   ui.input("\x1b[5~", 20);
   rows = screen(ui.draw(80, 20), 80, 20);
   expect(rows.join("\n")).not.toContain("line 40");
@@ -845,12 +846,12 @@ test("the reading view shows each contribution as a block behind alternating gut
   expect(body.slice(0, 5)).toEqual([` ▌ ${clock(0)}`, " ▌ block 0", "", ` ▌ ${clock(60_000)}`, " ▌ block 1 and more"]);
   expect(frame).toContain(new Style({ fg: "accent", bg: "bg" }).sgr() + "▌");
   expect(frame).toContain(new Style({ fg: "warm", bg: "bg" }).sgr() + "▌");
-  // The meter and the threshold stay, and so do their keys.
+  // The meter and the threshold stay, and so do their keys; the wheel scrolls here.
   expect(rows[4]).toContain("T:44");
   expect(rows[19]).toContain(" v  back");
   ui.input("+");
   ui.input("\x1b[<64;10;12M");
-  expect(calls.thresholds).toEqual([46, 48]);
+  expect(calls.thresholds).toEqual([46]);
   ui.input("m");
   expect(session.muted).toBe(true);
   expect(ui.reading).not.toBeNull();
@@ -900,6 +901,32 @@ test("the reading view follows new speech until scrolled up, and counts what cam
   ui.input("j");
   ui.input("\x1b[B");
   expect(ui.reading?.top).toBeNull();
+});
+
+test("in the reading view the wheel scrolls the conversation, and + and - still move the threshold", () => {
+  const { ui, calls } = conversation(10);
+  ui.input("v");
+  ui.draw(80, 20);
+  // Wheel up: three lines back from the bottom (20); the threshold stays.
+  ui.input("\x1b[<64;40;12M");
+  expect(ui.reading?.top).toBe(17);
+  ui.input("\x1b[<64;40;12M");
+  expect(ui.reading?.top).toBe(14);
+  expect(calls.thresholds).toEqual([]);
+  expect(
+    screen(ui.draw(80, 20), 80, 20)
+      .slice(9, 18)
+      .some(r => r.endsWith("┃")),
+  ).toBe(true);
+  // Wheel down back to the bottom follows again.
+  ui.input("\x1b[<65;40;12M\x1b[<65;40;12M");
+  expect(ui.reading?.top).toBeNull();
+  ui.input("+");
+  expect(calls.thresholds).toEqual([46]);
+  // Closed, the wheel moves the threshold again.
+  ui.input("\x1b");
+  ui.input("\x1b[<64;40;12M");
+  expect(calls.thresholds).toEqual([46, 48]);
 });
 
 test("each scroll key moves the reading view by its step", () => {

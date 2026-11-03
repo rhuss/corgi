@@ -62,7 +62,7 @@ const seconds = (v: number) => `${v} s`;
 const help_entries: [string, string][] = [
   [
     "threshold",
-    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel. Raise it in a noisy room; lower it when quiet words are missed. Changed during a recording, it is the recording's threshold, which later recordings keep.",
+    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel (which scrolls the reading view instead). Raise it in a noisy room; lower it when quiet words are missed. Changed during a recording, it is the recording's threshold, which later recordings keep.",
   ],
   [
     "silence",
@@ -517,8 +517,8 @@ export class VoiceUi {
         if (r.latency) x += put(top + i, x, quiet, `(${r.latency}) `);
         put(top + i, x, r.style, r.label, cols - 2 - x);
       });
-      const bar = thumb(height, shown.length, first);
-      if (bar) for (let i = 0; i < bar.len; i++) frame += at(top + bar.start + i, cols - 1) + muted + "┃" + reset;
+      // No scroll bar: the history is a log, scrolled with the keys, and the
+      // wheel moves the threshold here.
     }
     // The keys, most needed first; those that do not fit are left out whole.
     frame += at(rows - 1, 1);
@@ -903,6 +903,9 @@ export class VoiceUi {
       case "end":
         r.top = null;
         return true;
+      // The wheel scrolls the conversation here, three lines a notch; + and - still move the threshold.
+      case "wheel":
+        return move(key.dir > 0 ? -3 : 3);
       case "ctrl": {
         const n = { u: -half, d: half, b: -page, f: page }[key.key];
         if (n === undefined) return false;
