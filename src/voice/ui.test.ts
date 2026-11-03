@@ -614,6 +614,28 @@ test("the dialog's folder browser picks the folder, and the next recording opens
   expect(ui.prompt!.dialog.browser.folder()).toBe(join(folder, "calls"));
 });
 
+test("a short window keeps the dialog's folder: fewer folders, then the folder field alone", () => {
+  const { ui, folder } = recording();
+  mkdirSync(join(folder, "calls"));
+  ui.input("r");
+  const d = ui.prompt!.dialog,
+    tail = folder.slice(-12);
+  // Two rows short of three folders: one shows.
+  let rows = screen(ui.draw(80, 16), 80, 16).join("\n");
+  expect(rows).toContain("Folder");
+  expect(rows).toContain("calls");
+  // The smallest voice window: no list, but the field still takes a folder.
+  rows = screen(ui.draw(80, 14), 80, 14).join("\n");
+  expect(rows).toContain("File name");
+  expect(rows).toContain("Folder");
+  expect(rows).toContain(tail);
+  expect(rows).not.toContain("calls");
+  expect(rows).not.toContain("clear");
+  ui.input("\tcalls");
+  expect(d.browser.focused).toBe(true);
+  expect(d.browser.folder()).toBe(join(folder, "calls"));
+});
+
 test("a folder typed in the dialog that is not there yet is made, for the user alone", () => {
   const { ui, folder, started } = recording();
   ui.input("r");

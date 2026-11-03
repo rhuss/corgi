@@ -18,6 +18,9 @@ import { Writer, writeEllipsis, displayWidth } from "./text";
 
 /** The most folders the list shows at once. */
 const folder_rows = 10;
+/** The card with the folder field and no list: the title, its note, both
+ * fields with their labels, the keys, and the border. */
+const field_only_height = 11;
 /** A press on the folder field, a folder in the list, or out and in. */
 export type Hit =
   nameDialog.Hit | { tag: "folder"; field: number } | { tag: "entry"; index: number } | { tag: "open" } | { tag: "up" };
@@ -556,15 +559,21 @@ export class View extends nameDialog.View {
   compact = false;
 
   /** Without room for three folders, the plain dialog is used instead; moving
-   * a workspace keeps its folder field, alone, in the plain dialog's place. */
+   * a workspace keeps its folder field, alone, in the plain dialog's place. A
+   * transcript's folder is never left out either: in voice mode's smaller
+   * window it shows fewer folders, or the folder field under the name. */
   static layout(width: number, height: number, d: Dialog): View | null {
-    const rows = Math.min(folder_rows, height - 15);
+    const fits = Math.min(folder_rows, height - 15),
+      transcript = "transcript" in d.target,
+      rows = fits >= (transcript ? 1 : 3) ? fits : 0;
     const w = Math.max(
       nameDialog.View.plainWidth(width),
       Math.min(width - 4, browserWidth(d.target, d.moving !== null)),
     );
-    if (rows < 3 || w < 20) return d.moving !== null ? View.compactLayout(width, height, d) : null;
-    const h = rows + 13;
+    if (w < 20 || (rows === 0 && !(transcript && height >= field_only_height)))
+      return d.moving !== null ? View.compactLayout(width, height, d) : null;
+    // The list's box takes two rows around its folders, and a row after it.
+    const h = rows ? rows + 13 : field_only_height;
     const x = Math.floor((width - w) / 2);
     const y = Math.floor((height - h) / 2);
     const b = d.browser;
@@ -707,6 +716,8 @@ export class View extends nameDialog.View {
     w.splat(" ", v.text_width + 2);
     w.write(`\x1b[${f.field_y + 1};${v.text_x + 1}H`);
     writeField(w, field, f.offset, v.text_width, plain);
+    // Too short for a list: the field alone.
+    if (f.rows === 0) return;
     // The list's box is as wide as the field.
     const right = left + v.text_width + 1;
     const edge = new Style({ fg: "line", bg: "surface" }).sgr();
