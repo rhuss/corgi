@@ -5,7 +5,9 @@ import { Style } from "../palette";
 import * as level from "./level";
 import * as transcript from "./transcript";
 import { keys, incomplete, type Key } from "../terminal_keys";
-import { displayWidth, ellipsis } from "../text";
+import { displayWidth, ellipsis, Writer } from "../text";
+import * as nameDialog from "../name_dialog";
+import * as folderDialog from "../new_workspace";
 import { thumb } from "../scroll_thumb";
 import { Differ } from "../frame_diff";
 import { closeReadiness } from "../pane/terminal";
@@ -81,7 +83,7 @@ const help_entries: [string, string][] = [
   ],
   [
     "record",
-    "r writes what is said to a transcript file, after asking for its name; r again pauses and resumes, and R stops. A recording keeps writing while dictation is muted. v shows it as a conversation, one block per speaker turn.",
+    "r writes what is said to a transcript file, after asking for its name and folder; r again pauses and resumes, and R stops. A recording mutes dictation while it runs, and stopping puts the mute back as it was; press m to dictate too. v shows it as a conversation, one block per speaker turn.",
   ],
   [
     "",
@@ -173,21 +175,34 @@ export type Options = {
   recorder?: Recorder;
   /** The values in effect, read for drawing instead of `threshold` and `timing`. */
   tuning?: Tuning;
-  /** The file a typed transcript name stands for, or why it is refused. */
-  resolveName?: (name: string) => { path: string } | { error: string };
+  /** The folder the transcript dialog starts in. */
+  folder?: string;
+  /** The file a typed transcript name in `folder` stands for, or why it is refused. */
+  resolveName?: (name: string, folder: string) => { path: string } | { error: string };
   /** Starts recording into a resolved file. */
   startRecording?: (path: string) => { path: string } | { error: string };
   stopRecording?: () => void;
 };
-/** The filename prompt: the name as typed; `fresh` while it is still the
- * suggestion, which the first typed character replaces. Keys arrive as
- * latin1 bytes, which `decoder` turns back into UTF-8 text. `hint` is the
- * line under the name, worked out once per name, not on every frame. */
+/** The transcript dialog: the New workspace dialog's file name and folder
+ * browser. `view` is the last frame's, which clicks land on; `noted` the name
+ * and folder the dialog's note was worked out for, once per change, not on
+ * every frame. */
 type Prompt = {
-  name: string;
-  fresh: boolean;
-  decoder: TextDecoder;
-  hint: { name: string; style: string; text: string } | null;
+  dialog: folderDialog.Dialog;
+  view: nameDialog.View | null;
+  noted: string | null;
+};
+/** The escape sequences the dialog reads, for the keys the voice window parses. */
+const sequences: Partial<Record<Key["kind"], string>> = {
+  up: "\x1b[A",
+  down: "\x1b[B",
+  right: "\x1b[C",
+  left: "\x1b[D",
+  backtab: "\x1b[Z",
+  pageup: "\x1b[5~",
+  pagedown: "\x1b[6~",
+  home: "\x1b[H",
+  end: "\x1b[F",
 };
 type Picker = { devices: Device[]; choice: number; loading: boolean; notice?: string };
 /** A timing's dropdown, opened by a click on it, below its value at `y`, `x`. */
@@ -347,6 +362,8 @@ export class VoiceUi {
   /** The help overlay, and how far it is scrolled when it does not fit. */
   help: { scroll: number } | null = null;
   prompt: Prompt | null = null;
+  /** The folder the last recording went into, where the dialog opens next. */
+  private folder: string | null = null;
   /** Quitting waits for the transcript to be finished. */
   finishing = false;
   /** The reading view, while open: the first line it shows, or null while it
@@ -533,7 +550,7 @@ export class VoiceUi {
     if (this.picker) frame += this.drawPicker(cols, rows, at);
     if (this.menu) frame += this.drawMenu(cols, rows, at);
     if (this.help) frame += this.drawHelp(cols, rows, at);
-    if (this.prompt) frame += this.drawPrompt(cols, rows, at);
+    if (this.prompt) frame += this.drawPrompt(cols, rows);
     return frame;
   }
   /** The status line: what stands in the way, if anything, and its style. */
@@ -548,76 +565,97 @@ export class VoiceUi {
     if (!s.viewer) return [muted, "No Corgi window is attached; nothing is typed until one is"];
     return null;
   }
-  /** What a typed transcript name stands for. */
-  private resolveName(name: string): { path: string } | { error: string } {
-    return this.opts.resolveName?.(name) ?? { error: "recording is not available" };
+  /** The file the dialog's name and folder stand for. */
+  private resolveName(d: folderDialog.Dialog): { path: string } | { error: string } {
+    return this.opts.resolveName?.(d.name(), d.browser.folder()) ?? { error: "recording is not available" };
   }
-  private drawPrompt(cols: number, rows: number, at: (y: number, x: number) => string): string {
+  /** The dialog as the New workspace dialog draws it, with a caret of its own
+   * in the field that has the keys: this screen keeps the terminal's hidden. */
+  private drawPrompt(cols: number, rows: number): string {
     const p = this.prompt!,
-      width = Math.min(cols - 4, 72),
-      height = 7,
-      room = width - 4,
-      left = Math.floor((cols - width) / 2),
-      top = Math.floor((rows - height) / 2);
-    let out = box(at, top, left, width, height, "Record a transcript");
-    out += at(top + 1, left + 2) + muted + "File name:" + reset;
-    // A long name shows its end, where the typing is.
-    let name = p.name.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
-    if (displayWidth(name) > room - 1) {
-      const chars = [...name];
-      while (chars.length && displayWidth(chars.join("")) > room - 2) chars.shift();
-      name = "…" + chars.join("");
+      d = p.dialog,
+      key = `${d.name()}\0${d.browser.folder()}`;
+    if (p.noted !== key) {
+      const where = this.resolveName(d);
+      d.note =
+        "error" in where
+          ? { text: where.error, warn: true }
+          : transcript.exists(where.path)
+            ? { text: `appends to the existing file: ${where.path}`, warn: true }
+            : { text: where.path, warn: false };
+      p.noted = key;
     }
-    out += at(top + 2, left + 2) + (p.fresh ? focused + name : text + name + accent + "▏") + reset;
-    if (p.hint?.name !== p.name) {
-      const where = this.resolveName(p.name),
-        [style, hint] =
-          "error" in where
-            ? [warm, where.error]
-            : transcript.exists(where.path)
-              ? [warm, `appends to the existing file: ${where.path}`]
-              : [quiet, where.path];
-      p.hint = { name: p.name, style, text: hint.replace(/[\x00-\x1f\x7f-\x9f]/g, " ") };
-    }
-    out += at(top + 3, left + 2) + p.hint.style + ellipsis(p.hint.text, room) + reset;
-    out += at(top + 5, left + 2) + quiet + ellipsis("enter start  esc cancel", room) + reset;
-    return out;
+    d.fit(cols, rows);
+    const v = nameDialog.View.init(cols, rows, d),
+      w = new Writer(),
+      field_style = new Style({ fg: "text", bg: "selected" }).sgr();
+    v.draw(d, w, 0);
+    const [field, offset, y] =
+      v instanceof folderDialog.View && d.browser.focused
+        ? [d.browser.field, v.folders.offset, v.folders.field_y]
+        : [d as nameDialog.Dialog, v.offset, v.field_y];
+    w.write(`\x1b[${y + 1};${v.text_x + 1}H`);
+    nameDialog.writeField(w, field, offset, v.text_width, field_style, { caret: true });
+    p.view = v;
+    return w.buffered() + reset;
   }
   private promptKey(key: Key): void {
     const p = this.prompt!,
-      edit = (name: string) => {
-        p.name = name;
-        p.fresh = false;
-      };
+      d = p.dialog;
+    let result: nameDialog.Result = "none";
     switch (key.kind) {
-      case "esc":
-        this.prompt = null;
-        return;
-      // Quitting cancels the prompt; no file is made.
+      // Quitting cancels the dialog; no file is made.
       case "cancel":
         this.prompt = null;
         return this.opts.quit();
-      case "enter": {
-        const where = this.resolveName(p.name);
-        if ("error" in where) return;
-        this.prompt = null;
-        // An open error shows in the status line and the history.
-        this.opts.startRecording?.(where.path);
-        return;
-      }
+      case "esc":
+        result = d.key(27);
+        break;
+      case "enter":
+        result = d.key(13);
+        break;
+      case "tab":
+        result = d.key(9);
+        break;
       case "backspace":
-        return edit([...p.name].slice(0, -1).join(""));
+        result = d.key(127);
+        break;
       case "ctrl":
-        if (key.key === "u") edit("");
-        return;
+        result = d.key(key.key.charCodeAt(0) - 96);
+        break;
       case "text": {
-        // A character can arrive split across keys; the decoder holds its start.
-        const typed = p.decoder.decode(Buffer.from(key.text, "latin1"), { stream: true });
-        return edit((p.fresh ? "" : p.name) + typed.replace(/[\x00-\x1f\x7f-\x9f]/g, ""));
+        // Keys arrive as latin1 bytes; the dialog puts UTF-8 back together.
+        const bytes = Buffer.from(key.text, "latin1");
+        if (bytes.length === 1) result = d.key(bytes[0]);
+        else for (const b of bytes) d.pasteByte(b);
+        break;
+      }
+      case "click":
+        if (p.view) result = d.press(p.view, key.x, key.y, Date.now());
+        break;
+      case "wheel":
+        if (d.browser.focused) d.browser.move(key.dir > 0 ? -1 : 1);
+        break;
+      default: {
+        const seq = sequences[key.kind];
+        if (seq) d.sequence(seq);
       }
     }
+    if (result === "cancel") this.prompt = null;
+    else if (result === "save") this.submit();
   }
-  /** r: the filename prompt without a recording, else pause or resume. */
+  /** Enter: records into the file the dialog names, unless it is refused,
+   * which its note says. */
+  private submit(): void {
+    const d = this.prompt!.dialog,
+      where = this.resolveName(d);
+    if ("error" in where) return;
+    this.prompt = null;
+    this.folder = d.browser.folder();
+    // An open error shows in the status line and the history.
+    this.opts.startRecording?.(where.path);
+  }
+  /** r: the transcript dialog without a recording, else pause or resume. */
   private record(): void {
     const recorder = this.opts.recorder;
     // Quitting is finishing the transcript; nothing new starts.
@@ -627,9 +665,18 @@ export class VoiceUi {
         return recorder.pause();
       case "paused":
         return recorder.resume();
-      default:
+      default: {
         if (!this.canStart) return;
-        this.prompt = { name: transcript.defaultName(new Date()), fresh: true, decoder: new TextDecoder(), hint: null };
+        const browser = folderDialog.Browser.init(this.folder ?? this.opts.folder ?? process.cwd());
+        // Folders made here are the user's alone, as the transcript's own are.
+        browser.folder_mode = 0o700;
+        const { name, caret } = transcript.defaultName(new Date());
+        this.prompt = {
+          dialog: folderDialog.Dialog.named(browser, { transcript: null }, name, caret),
+          view: null,
+          noted: null,
+        };
+      }
     }
   }
   /** A new recording needs a name resolved and a way to start it. */

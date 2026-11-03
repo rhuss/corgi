@@ -181,11 +181,17 @@ async function voice(
       shared: { burst: s.burst, pre_roll: s.pre_roll, min_speech: s.min_speech },
       warn: text => recorder.notice("error", text),
     }),
-    recorder = new Recorder({ tuning, now: Date.now, log: line => logger.info(line) }),
+    recorder = new Recorder({
+      tuning,
+      now: Date.now,
+      log: line => logger.info(line),
+      // The session exists by the time a recording starts.
+      active: on => muting(on),
+    }),
     folder = settings.transcriptsFolder(s, process.env, process.cwd()),
     home = settings.home(process.env),
     // The one place a typed transcript name becomes a file.
-    resolveName = (name: string) => transcript.resolve(name, folder, home);
+    resolveName = (name: string, dir: string) => transcript.resolve(name, dir, home);
   // The server starts after the first connection, so a refusal starts nothing.
   let server: Server | null = null,
     restarting = false;
@@ -208,6 +214,7 @@ async function voice(
     log: line => logger.info(line),
     recorder,
   });
+  const muting = muteWhileRecording(session);
   // Over SSH, the first connection may prompt; it happens before the UI takes the terminal.
   try {
     await session.connect();
@@ -327,6 +334,7 @@ async function voice(
     quit: quitting.press,
     recorder,
     tuning,
+    folder,
     resolveName,
     startRecording: path => recorder.start(path),
     stopRecording: () => void recorder.stop(),
@@ -340,6 +348,24 @@ async function voice(
   await cleanup();
   for (const { path, late } of finished) if (late) process.stderr.write(lateMessage(path, late));
   return 0;
+}
+/** Muting while a recording runs: it records the conversation, not dictation.
+ * A recording mutes voice mode, and Corgi with it, when it starts; when it
+ * ends, the mute goes back to what it was before, so a mute that was on stays on. */
+export function muteWhileRecording(session: {
+  muted: boolean;
+  setMuted: (muted: boolean) => void;
+}): (recording: boolean) => void {
+  let before: boolean | null = null;
+  return recording => {
+    if (recording) {
+      before = session.muted;
+      if (!before) session.setMuted(true);
+    } else if (before !== null) {
+      if (session.muted !== before) session.setMuted(before);
+      before = null;
+    }
+  };
 }
 /** Quitting voice mode: with a recording, the first `press` stops it and waits
  * for its transcript, with the window saying so, and a second press ends the
