@@ -753,12 +753,14 @@ test("while quitting waits for the transcript, the status line says so", () => {
   expect(screen(ui.draw(80, 20), 80, 20)[9]).toContain("Finishing transcript…");
 });
 
-test("a passage written but not typed shows as recorded, with why", () => {
+test("a passage written but not typed shows as recorded, with why unless it was the mute", () => {
   const { ui, session, recorder } = recording();
   session.history = [said(1, "recorded", "a call", "muted"), said(2, "recorded", "and more", "no viewer attached")];
   const rows = screen(ui.draw(80, 20), 80, 20).join("\n"),
     at = clock(0);
-  expect(rows).toContain(`● ${at} a call · recorded, not typed (muted)`);
+  // Muted is what a recording does by itself: the mark alone says it was written, not typed.
+  expect(rows.split("\n").map(r => r.trim())).toContain(`● ${at} a call`);
+  expect(rows).not.toContain("(muted)");
   expect(rows).toContain(`● ${at} and more · recorded, not typed (no viewer attached)`);
   // No answer to the typing: written, and perhaps typed, so it does not claim otherwise.
   session.history = [
@@ -768,7 +770,7 @@ test("a passage written but not typed shows as recorded, with why", () => {
   const slow = screen(ui.draw(100, 20), 100, 20).join("\n");
   expect(slow).toContain(`● ${at} slow · recorded (no answer in time; may have been typed)`);
   expect(slow).not.toContain("slow · recorded, not typed");
-  expect(ui.draw(80, 20)).toContain(new Style({ fg: "muted", bg: "bg" }).sgr() + "a call · recorded");
+  expect(ui.draw(80, 20)).toContain(new Style({ fg: "muted", bg: "bg" }).sgr() + "a call");
   // Muted while recording: the note and the meter stay grey; REC says speech is still kept.
   session.muted = true;
   const dir = mkdtempSync(join(tmpdir(), "corgi-ui-"));

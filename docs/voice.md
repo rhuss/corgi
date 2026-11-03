@@ -163,7 +163,8 @@ step:
 | `○ recording started: PATH` | The file is open |
 | `○ paused`, `○ resumed` | Passages in between are not written |
 | `○ stopped: PATH` | The file is closed |
-| `● TEXT · recorded, not typed (REASON)` | Written but not typed, because voice mode is muted, has no viewer attached, is not connected, has a backlog, or the delivery failed |
+| `● TEXT` | Written but not typed, because voice mode is muted, as a recording leaves it |
+| `● TEXT · recorded, not typed (REASON)` | Written but not typed for another reason: no viewer attached, not connected, a backlog, or the delivery failed |
 | `● TEXT · recorded (no answer in time; may have been typed)` | Written, and sent to be typed, but the runtime did not answer in time, so it may have been typed |
 | `✗ recording not started: REASON` | The file could not be created or opened |
 | `✗ recording stopped: REASON` | A write failed. The recording closes, the text written so far stays, and dictation goes on |
