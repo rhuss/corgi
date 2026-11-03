@@ -62,7 +62,7 @@ const seconds = (v: number) => `${v} s`;
 const help_entries: [string, string][] = [
   [
     "threshold",
-    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel over the top part of the window (below the line under the options it scrolls). Raise it in a noisy room; lower it when quiet words are missed. Changed during a recording, it is the recording's threshold, which later recordings keep.",
+    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel (in the reading view, only above the line under the options; below it, it scrolls). Raise it in a noisy room; lower it when quiet words are missed. Changed during a recording, it is the recording's threshold, which later recordings keep.",
   ],
   [
     "silence",
@@ -525,7 +525,7 @@ export class VoiceUi {
         if (r.latency) x += put(top + i, x, quiet, `(${r.latency}) `);
         put(top + i, x, r.style, r.label, cols - 2 - x);
       });
-      // No scroll bar: the history is a log, scrolled with the keys and the wheel.
+      // No scroll bar: the history is a log, scrolled with the keys.
     }
     // The keys, most needed first; those that do not fit are left out whole.
     frame += at(rows - 1, 1);
@@ -841,9 +841,9 @@ export class VoiceUi {
         return;
       case "click":
         return this.hits.find(h => key.y === h.y && key.x >= h.x && key.x < h.x + h.width)?.act();
-      // Above the line under the options, the wheel moves the threshold; below it, it scrolls.
+      // Outside the reading view the wheel moves the threshold anywhere in the window.
       case "wheel":
-        return key.y < history_top - 1 ? this.nudge(key.dir) : back(key.dir > 0 ? 3 : -3);
+        return this.nudge(key.dir);
       case "text":
         switch (key.text) {
           case "q":

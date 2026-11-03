@@ -94,8 +94,7 @@ the history says "focused pane is the voice pane".
 | --- | --- |
 | `m` | Mute or unmute |
 | `?` | Explain the options and how each changes what becomes text |
-| `+` / `-` | Raise or lower the threshold by 2 (or turn the mouse wheel over the top part, above the line under the options) |
-| Mouse wheel below that line | Scroll the history, or the reading view, by three rows |
+| `+` / `-` | Raise or lower the threshold by 2 (or turn the mouse wheel anywhere in the window; in the reading view, above the line under the options) |
 | `f` | Turn the speech filter on or off; restarts whisper-server, about a second, and brings it back after a crash |
 | `d` | Pick another microphone |
 | `r` | Start a recording, or pause and resume it |

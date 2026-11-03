@@ -289,20 +289,14 @@ test("the meter fills braille dots in quarter cells, dimmed under the threshold"
   expect(muted).toContain(mark + "┃");
 });
 
-test("above the line under the options the wheel moves the threshold; below it, it scrolls the history", () => {
+test("outside the reading view the wheel moves the threshold anywhere in the window", () => {
   const { ui, calls, session } = setup();
+  session.history = Array.from({ length: 40 }, (_, i) => said(i + 1, "delivered", `line ${i + 1}`));
   ui.input("\x1b[<64;10;3M");
   ui.input("\x1b[<65;10;3M\x1b[<65;10;3M");
-  ui.input("\x1b[<64;40;8M");
+  ui.input("\x1b[<64;40;12M");
   expect(calls.thresholds).toEqual([46, 44, 42, 44]);
-  session.history = Array.from({ length: 40 }, (_, i) => said(i + 1, "delivered", `line ${i + 1}`));
-  // The line itself (row 9) and the history below it scroll, three rows a notch.
-  ui.input("\x1b[<64;40;9M\x1b[<64;40;15M");
-  expect(ui.scroll).toBe(6);
-  expect(screen(ui.draw(80, 20), 80, 20)[17]).toContain("line 34");
-  ui.input("\x1b[<65;40;15M\x1b[<65;40;15M\x1b[<65;40;15M");
   expect(ui.scroll).toBe(0);
-  expect(calls.thresholds).toEqual([46, 44, 42, 44]);
 });
 
 test("PgUp and PgDn page through the history", () => {
