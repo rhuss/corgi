@@ -289,11 +289,19 @@ test("the meter fills braille dots in quarter cells, dimmed under the threshold"
   expect(muted).toContain(mark + "┃");
 });
 
-test("the wheel moves the threshold anywhere in the window", () => {
-  const { ui, calls } = setup();
+test("above the line under the options the wheel moves the threshold; below it, it scrolls the history", () => {
+  const { ui, calls, session } = setup();
   ui.input("\x1b[<64;10;3M");
   ui.input("\x1b[<65;10;3M\x1b[<65;10;3M");
-  ui.input("\x1b[<64;40;12M");
+  ui.input("\x1b[<64;40;8M");
+  expect(calls.thresholds).toEqual([46, 44, 42, 44]);
+  session.history = Array.from({ length: 40 }, (_, i) => said(i + 1, "delivered", `line ${i + 1}`));
+  // The line itself (row 9) and the history below it scroll, three rows a notch.
+  ui.input("\x1b[<64;40;9M\x1b[<64;40;15M");
+  expect(ui.scroll).toBe(6);
+  expect(screen(ui.draw(80, 20), 80, 20)[17]).toContain("line 34");
+  ui.input("\x1b[<65;40;15M\x1b[<65;40;15M\x1b[<65;40;15M");
+  expect(ui.scroll).toBe(0);
   expect(calls.thresholds).toEqual([46, 44, 42, 44]);
 });
 
@@ -925,10 +933,40 @@ test("in the reading view the wheel scrolls the conversation, and + and - still 
   expect(ui.reading?.top).toBeNull();
   ui.input("+");
   expect(calls.thresholds).toEqual([46]);
-  // Closed, the wheel moves the threshold again.
-  ui.input("\x1b");
-  ui.input("\x1b[<64;40;12M");
+  // Above the line, the wheel still moves the threshold.
+  ui.input("\x1b[<64;40;4M");
   expect(calls.thresholds).toEqual([46, 48]);
+  expect(ui.reading?.top).toBeNull();
+});
+
+test("the reading view's scroll bar can be dragged, and a press on its track jumps there", () => {
+  const { ui } = conversation(10);
+  ui.input("v");
+  // 29 lines in 9 rows from row 9; the thumb is 2 rows, at the bottom: rows 16 and 17.
+  const bar = () =>
+    screen(ui.draw(80, 20), 80, 20)
+      .map((r, y) => (r.endsWith("┃") ? y : -1))
+      .filter(y => y >= 0);
+  expect(bar()).toEqual([16, 17]);
+  // Press on the thumb's lower row, drag it to the top: the view goes to the start.
+  ui.input("\x1b[<0;80;18M");
+  ui.input("\x1b[<32;80;14M");
+  expect(ui.reading?.top).toBe(9);
+  ui.input("\x1b[<32;80;1M");
+  expect(ui.reading?.top).toBe(0);
+  expect(bar()).toEqual([9, 10]);
+  ui.input("\x1b[<0;80;1m");
+  // Released, moving the pointer drags nothing.
+  ui.input("\x1b[<32;80;18M");
+  expect(ui.reading?.top).toBe(0);
+  // A press on the track below the thumb centres the thumb there; the bottom follows again.
+  ui.input("\x1b[<0;80;18M\x1b[<0;80;18m");
+  expect(ui.reading?.top).toBeNull();
+  // A press in the column beside the bar counts; one in the text does not.
+  ui.input("\x1b[<0;79;10M\x1b[<0;79;10m");
+  expect(ui.reading?.top).toBe(0);
+  ui.input("\x1b[<0;20;16M\x1b[<0;20;16m");
+  expect(ui.reading?.top).toBe(0);
 });
 
 test("each scroll key moves the reading view by its step", () => {
