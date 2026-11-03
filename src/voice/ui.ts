@@ -315,11 +315,16 @@ function describe(u: Utterance): { glyph: string; style: string; label: string }
     case "discarded":
       return { glyph: "○", style: quiet, label: `discarded (${u.reason})` };
     case "recorded":
-      // Written; typed or not, unless the typing got no answer and may have been.
+      // Written; typed or not, unless the typing got no answer and may have
+      // been. Muted is what a recording does by itself, so the mark says
+      // enough; anything else not typed gets its reason.
       return {
         glyph: "●",
         style: muted,
-        label: `${said} · ${u.maybe_typed ? "recorded" : "recorded, not typed"} (${u.reason})`,
+        label:
+          !u.maybe_typed && u.reason === "muted"
+            ? said
+            : `${said} · ${u.maybe_typed ? "recorded" : "recorded, not typed"} (${u.reason})`,
       };
     // Muting drops what was said on purpose; it needs no row.
     case "muted":
