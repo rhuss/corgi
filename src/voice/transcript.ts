@@ -3,16 +3,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-/** `transcript-YYYY-MM-DDTHH-MM-SS.txt` in local time. */
-export function defaultName(now: Date): string {
+/** The suggested name, `YYYY-MM-DD-.txt` in local time, and where the caret
+ * starts: after the date, so a description goes in before the extension, as
+ * in `2026-05-11-standup.txt`. */
+export function defaultName(now: Date): { name: string; caret: number } {
   const pad = (n: number) => String(n).padStart(2, "0");
-  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  const time = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`;
-  return `transcript-${date}T${time}.txt`;
+  const name = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}-.txt`;
+  return { name, caret: name.length - ".txt".length };
 }
 
 /** The file a typed name stands for: `~/` is the home folder, absolute names
- * are used as given, and relative names stay inside `folder`. */
+ * are used as given, and relative names stay inside `folder`, which the dialog picks. */
 export function resolve(name: string, folder: string, home: string): { path: string } | { error: string } {
   const trimmed = name.trim();
   if (!trimmed) return { error: "name is empty" };
@@ -21,7 +22,7 @@ export function resolve(name: string, folder: string, home: string): { path: str
   const joined = path.join(folder, trimmed);
   const inside = path.relative(folder, joined);
   if (inside === ".." || inside.startsWith(".." + path.sep) || path.isAbsolute(inside))
-    return { error: "stays inside the transcript folder: remove .." };
+    return { error: "no .. in the name; pick the folder below" };
   return { path: joined };
 }
 

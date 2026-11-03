@@ -120,31 +120,38 @@ shortens to make room; with no voice attached it is gone.
 `corgi action voice-mute` does the same from a script.
 
 Muting drops anything not yet typed, though a running recording still writes
-it. When the microphone or Whisper fails, the indicator shows muted and
+it. Starting a recording mutes, and stopping it unmutes again, unless voice
+mode was muted before; see [Mute, pause and quit](#mute-pause-and-quit). When the microphone or Whisper fails, the indicator shows muted and
 unmuting has no effect until it recovers.
 
 ## Record a transcript
 
 Voice mode can also write what you say to a text file, for a meeting or your
-own notes. Dictation keeps working while it records.
+own notes. A recording mutes dictation while it runs; press `m` to dictate
+too.
 
 | Key | Does |
 | --- | --- |
-| `r` | No recording: open the filename prompt. Recording: pause. Paused: resume |
+| `r` | No recording: open the file dialog. Recording: pause. Paused: resume |
 | `R` | Stop, whether running or paused |
 | `v` | Open the [reading view](#reading-view) |
 
-The prompt suggests `transcript-YYYY-MM-DDTHH-MM-SS.txt`, in local time. The
-first character you type replaces it. Backspace deletes, Ctrl+U clears, Enter
-starts the recording and Esc cancels; Ctrl+C cancels and quits. The line under
-the field shows the file the name resolves to,
-`appends to the existing file: PATH`, or why the name is refused:
-`name is empty` or `stays inside the transcript folder: remove ..`.
+`r` opens the dialog Corgi uses for a new workspace: the file name above, the
+folder below it with the folders in it. The name starts as today's date,
+`YYYY-MM-DD-.txt` in local time, with the cursor before `.txt`, so you can type
+a description straight away, such as `2026-05-11-standup.txt`. The folder
+starts in the transcript folder, or where the last recording of this run went.
 
-A relative name goes into the transcript folder and may contain sub-folders,
-which are created as needed. `~/` means your home folder, and an absolute
-path is used as given. No extension is added, and `..` may not climb out of
-the folder.
+Tab moves between the name and the folder. In the folder, ↑ and ↓ pick a
+folder, → opens it and ← goes up; a folder that isn't there yet is offered as
+`+ Create`, and is made for you alone (0700). Enter starts the recording and
+Esc cancels; Ctrl+C cancels and quits. The line under the title shows the file
+the name and folder resolve to, `appends to the existing file: PATH`, or why
+the name is refused: `name is empty` or
+`no .. in the name; pick the folder below`.
+
+The name may contain sub-folders, which are created as needed. `~/` means your
+home folder, and an absolute path is used as given. No extension is added.
 
 While recording, the mode row shows a red `● REC`; while paused, `⏸ paused`.
 The footer gains `r record|pause|resume`, `R stop` and `v read|back`, and
@@ -211,6 +218,12 @@ silence) are not written.
 
 ### Mute, pause and quit
 
+Starting a recording mutes voice mode, and Corgi with it, so the conversation
+goes to the file and not into a pane. Stopping it, with `R`, by quitting or
+after a write error, puts the mute back as it was before the recording:
+unmuted, unless it was already muted then. Press `m` during a recording to
+dictate as well; stopping still puts the earlier state back.
+
 While a recording runs, voice mode keeps listening when muted, with no Corgi
 window attached, or with no runtime to reach. It writes the passages and
 doesn't type them; the same goes for a passage you were saying when you muted
@@ -218,8 +231,8 @@ or the viewer left, and for one you started while muted or with no viewer
 attached, even if that changes before it ends. Without a recording, or with the recording paused, muting
 drops the audio.
 
-While paused, passages still show in the history and are typed as usual, but
-are not written.
+While paused, nothing is written. Still muted, as the recording left it, the
+audio is dropped; unmuted, passages show in the history and are typed as usual.
 
 Quitting with a recording (`q` or Ctrl+C) keeps the window open with
 `Finishing transcript…` while passages still being transcribed finish, for
