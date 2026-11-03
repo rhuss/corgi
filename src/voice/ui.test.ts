@@ -6,7 +6,7 @@ import { Segmenter, default_timing } from "./segmenter";
 import type { Device } from "./capture";
 import * as palette from "../palette";
 import { Style } from "../palette";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Recorder } from "./recorder";
@@ -534,7 +534,8 @@ function recording(opts: Partial<Options> = {}, real?: Tuning) {
   let stops = 0;
   const made = setup({
     recorder,
-    resolveName: name => transcript.resolve(name, folder, "/home/me"),
+    folder,
+    resolveName: (name, dir) => transcript.resolve(name, dir, "/home/me"),
     startRecording: path => {
       started.push(path);
       return recorder.start(path);
@@ -548,40 +549,81 @@ function recording(opts: Partial<Options> = {}, real?: Tuning) {
   return { ...made, recorder, folder, started, stops: () => stops };
 }
 
-/** The line under the prompt's name, before a frame cuts it to fit: temp
- * folders can be longer than the prompt is wide. */
+/** Ctrl+A and Ctrl+K: empties the file name, suggestion and all. */
+const clear = "\x01\x0b";
+/** The line under the dialog's title, before a frame cuts it to fit: temp
+ * folders can be longer than the dialog is wide. */
 function hint(ui: VoiceUi): string | undefined {
   ui.draw(80, 20);
-  return ui.prompt?.hint?.text;
+  return ui.prompt?.dialog.note?.text;
 }
 /** The whole screen, wide enough for a temp folder's paths. */
 const wide = (ui: VoiceUi) => screen(ui.draw(200, 20), 200, 20).join("\n");
 
-test("r asks for a file name, suggesting one; typing replaces it", () => {
+test("r opens the New workspace dialog for a file name in the transcript folder, the caret after the date", () => {
   const { ui, folder, started } = recording();
   ui.input("r");
+  const d = ui.prompt!.dialog;
+  expect(d.name()).toMatch(/^\d{4}-\d\d-\d\d-\.txt$/);
+  expect(d.cursor).toBe(d.len - ".txt".length);
+  expect(d.selected).toBe(false);
+  expect(d.browser.folder()).toBe(folder);
   let rows = screen(ui.draw(80, 20), 80, 20).join("\n");
-  expect(rows).toContain("╭─ Record a transcript");
-  expect(rows).toMatch(/transcript-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.txt/);
-  expect(hint(ui)).toStartWith(join(folder, "transcript-"));
-  expect(rows).toContain(folder.slice(0, 20));
-  expect(rows).toContain("enter start  esc cancel");
-  // The first character replaces the suggestion; Backspace and Ctrl+U edit.
-  ui.input("standupX");
-  ui.input("\x7f");
-  expect(ui.prompt?.name).toBe("standup");
-  ui.input("\x15");
-  expect(ui.prompt?.name).toBe("");
+  expect(rows).toContain("Record a transcript");
+  expect(rows).toContain("File name");
+  expect(rows).toContain("Folder");
+  expect(rows).toContain("record");
+  expect(rows).toContain("out / in");
+  // The voice window hides the terminal's cursor, so the field draws its own caret.
+  expect(ui.draw(80, 20)).toContain("\x1b[7m.");
+  // Typing goes in between the date and the extension.
+  ui.input("standupX\x7f");
+  const name = d.name();
+  expect(name).toMatch(/^\d{4}-\d\d-\d\d-standup\.txt$/);
+  expect(hint(ui)).toBe(join(folder, name));
+  ui.input(clear);
+  expect(d.name()).toBe("");
   rows = screen(ui.draw(80, 20), 80, 20).join("\n");
   expect(rows).toContain("name is empty");
   // Enter on a refused name does nothing; Esc cancels without a file.
   ui.input("\r");
   expect(ui.prompt).not.toBeNull();
   ui.input("../x.txt");
-  expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain("stays inside the transcript folder: remove ..");
+  expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain("no .. in the name; pick the folder below");
   ui.input("\x1b");
   expect(ui.prompt).toBeNull();
   expect(started).toEqual([]);
+});
+
+test("the dialog's folder browser picks the folder, and the next recording opens there", () => {
+  const { ui, folder, started, recorder } = recording();
+  mkdirSync(join(folder, "calls"));
+  ui.input("r");
+  // Tab to the folder field; Down highlights its first folder and writes it in.
+  ui.input("\t");
+  ui.input("\x1b[B");
+  const d = ui.prompt!.dialog;
+  expect(d.browser.focused).toBe(true);
+  expect(d.browser.folder()).toBe(join(folder, "calls"));
+  expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain("calls");
+  const name = d.name();
+  ui.input("\r");
+  expect(started).toEqual([join(folder, "calls", name)]);
+  void recorder.stop();
+  ui.input("r");
+  expect(ui.prompt!.dialog.browser.folder()).toBe(join(folder, "calls"));
+});
+
+test("a folder typed in the dialog that is not there yet is made, for the user alone", () => {
+  const { ui, folder, started } = recording();
+  ui.input("r");
+  ui.input("\tnew/");
+  const d = ui.prompt!.dialog;
+  expect(d.browser.folder()).toBe(join(folder, "new"));
+  expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain("Create new");
+  ui.input("\r");
+  expect(started).toEqual([join(folder, "new", d.name())]);
+  expect(statSync(join(folder, "new")).mode & 0o777).toBe(0o700);
 });
 
 test("Enter starts the recording; the mode row shows REC and the footer the keys", () => {
@@ -590,7 +632,7 @@ test("Enter starts the recording; the mode row shows REC and the footer the keys
   expect(footer).toContain(" r  record");
   expect(footer).not.toContain(" R ");
   ui.input("r");
-  ui.input("call.txt\r");
+  ui.input(clear + "call.txt\r");
   expect(started).toEqual([join(folder, "call.txt")]);
   expect(ui.prompt).toBeNull();
   expect(recorder.current?.path).toBe(join(folder, "call.txt"));
@@ -611,9 +653,10 @@ test("the prompt takes a name in UTF-8, as the terminal sends it", () => {
   ui.input("r");
   // Keys reach the window as latin1 bytes; a character may span two reads.
   const bytes = Buffer.from("café-日本.txt", "utf8").toString("latin1");
+  ui.input(clear);
   ui.input(bytes.slice(0, 4));
   ui.input(bytes.slice(4));
-  expect(ui.prompt?.name).toBe("café-日本.txt");
+  expect(ui.prompt?.dialog.name()).toBe("café-日本.txt");
   expect(hint(ui)).toBe(join(folder, "café-日本.txt"));
   ui.input("\r");
   expect(started).toEqual([join(folder, "café-日本.txt")]);
@@ -623,19 +666,19 @@ test("the prompt says when the name is an existing file it appends to", () => {
   const { ui, folder } = recording();
   writeFileSync(join(folder, "notes.txt"), "Earlier.\n");
   ui.input("r");
-  ui.input("notes.txt");
+  ui.input(clear + "notes.txt");
   expect(hint(ui)).toBe(`appends to the existing file: ${join(folder, "notes.txt")}`);
   expect(screen(ui.draw(100, 20), 100, 20).join("\n")).toContain("appends to the existing file: ");
   ui.input("\x1b");
   ui.input("r");
-  ui.input("~/x.txt");
+  ui.input(clear + "~/x.txt");
   expect(screen(ui.draw(80, 20), 80, 20).join("\n")).toContain("/home/me/x.txt");
 });
 
 test("R stops the recording, and quitting from the prompt makes no file", async () => {
   const { ui, calls, recorder, folder, stops } = recording();
   ui.input("r");
-  ui.input("a.txt\r");
+  ui.input(clear + "a.txt\r");
   ui.input("R");
   expect(stops()).toBe(1);
   expect(recorder.current).toBeNull();
@@ -643,7 +686,7 @@ test("R stops the recording, and quitting from the prompt makes no file", async 
   await Bun.sleep(0);
   expect(wide(ui)).toContain(`stopped: ${join(folder, "a.txt")}`);
   ui.input("r");
-  ui.input("b.txt");
+  ui.input(clear + "b.txt");
   ui.input("\x03");
   expect(ui.prompt).toBeNull();
   expect(calls.quit).toBe(1);
@@ -654,7 +697,7 @@ test("a file that cannot be opened is reported in the status line and the histor
   const { ui, folder } = recording();
   writeFileSync(join(folder, "taken"), "");
   ui.input("r");
-  ui.input("taken/x.txt\r");
+  ui.input(clear + "taken/x.txt\r");
   const rows = screen(ui.draw(120, 20), 120, 20);
   expect(rows[9]).toContain("Cannot write the transcript: ");
   expect(rows.join("\n")).toMatch(/✗ \d\d:\d\d:\d\d recording not started: /);
@@ -720,7 +763,7 @@ test("a passage written but not typed shows as recorded, with why", () => {
 test("r pauses and resumes without a prompt; R stops from paused", () => {
   const { ui, recorder, stops } = recording();
   ui.input("r");
-  ui.input("p.txt\r");
+  ui.input(clear + "p.txt\r");
   ui.input("r");
   expect(recorder.current?.state).toBe("paused");
   expect(ui.prompt).toBeNull();
@@ -754,7 +797,7 @@ test("while quitting waits, r starts nothing new", () => {
 function conversation(n: number) {
   const made = recording();
   made.ui.input("r");
-  made.ui.input("c.txt\r");
+  made.ui.input(clear + "c.txt\r");
   const contributions = made.recorder.current!.turns.contributions;
   for (let i = 0; i < n; i++) contributions.push({ started_at: 60_000 * i, texts: [`block ${i}`] });
   return { ...made, contributions };
@@ -882,7 +925,7 @@ test("the meter and Options show the recording's values while it runs", () => {
   expect(rows[4]).toContain("T:44");
   expect(rows[6]).toMatch(/silence +2\.5 s /);
   ui.input("r");
-  ui.input("call.txt\r");
+  ui.input(clear + "call.txt\r");
   rows = screen(ui.draw(80, 20), 80, 20);
   expect(rows[4]).toContain("T:60");
   expect(rows[6]).toMatch(/silence +1 s /);
@@ -941,7 +984,7 @@ test("+ right after Enter steps from the recording's threshold, with no frame be
     { ui } = recording({ tuning, setThreshold: pct => tuning.setThreshold(pct) }, tuning);
   ui.draw(80, 20);
   ui.input("r");
-  ui.input("call.txt\r+");
+  ui.input(clear + "call.txt\r+");
   expect(tuning.threshold).toBe(62);
   ui.input("R+");
   expect(tuning.threshold).toBe(46);

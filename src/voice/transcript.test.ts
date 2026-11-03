@@ -93,7 +93,7 @@ test("resolve keeps relative names inside the folder", () => {
   expect(transcript.resolve("a/b/c.txt", folder, "/home/me")).toEqual({ path: path.join(folder, "a", "b", "c.txt") });
   expect(transcript.resolve("a/../b.txt", folder, "/home/me")).toEqual({ path: path.join(folder, "b.txt") });
   expect(transcript.resolve("..notes.txt", folder, "/home/me")).toEqual({ path: path.join(folder, "..notes.txt") });
-  const refused = { error: "stays inside the transcript folder: remove .." };
+  const refused = { error: "no .. in the name; pick the folder below" };
   expect(transcript.resolve("../x.txt", folder, "/home/me")).toEqual(refused);
   expect(transcript.resolve("a/../../x.txt", folder, "/home/me")).toEqual(refused);
   expect(transcript.resolve("..", folder, "/home/me")).toEqual(refused);
@@ -117,7 +117,7 @@ test("exists reports existing files", () => {
   expect(transcript.exists(file)).toBe(true);
 });
 
-test("the default name is the local time, zero padded", () => {
-  expect(transcript.defaultName(new Date(2026, 0, 2, 3, 4, 5))).toBe("transcript-2026-01-02T03-04-05.txt");
-  expect(transcript.defaultName(new Date(2026, 10, 22, 13, 45, 59))).toBe("transcript-2026-11-22T13-45-59.txt");
+test("the default name is the local date, zero padded, with the caret before the extension", () => {
+  expect(transcript.defaultName(new Date(2026, 0, 2, 3, 4, 5))).toEqual({ name: "2026-01-02-.txt", caret: 11 });
+  expect(transcript.defaultName(new Date(2026, 10, 22, 23, 59, 59))).toEqual({ name: "2026-11-22-.txt", caret: 11 });
 });

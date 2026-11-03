@@ -45,7 +45,15 @@ export class Recorder {
   /** Why the last recording could not start or stopped writing. */
   error: string | null = null;
   notices: Notice[] = [];
-  constructor(private deps: { tuning: Tuning; now: () => number; log?: (line: string) => void }) {}
+  constructor(
+    private deps: {
+      tuning: Tuning;
+      now: () => number;
+      log?: (line: string) => void;
+      /** A recording began (true), or the current one ended (false): stopped, or closed by a write error. */
+      active?: (on: boolean) => void;
+    },
+  ) {}
   /** Adds a line to the history. */
   notice(kind: Notice["kind"], text: string): void {
     this.notices.push({ at: this.deps.now(), kind, text });
@@ -80,6 +88,7 @@ export class Recorder {
     this.deps.tuning.begin();
     this.deps.log?.(`recording: started ${path}`);
     this.notice("info", `recording started: ${path}`);
+    this.deps.active?.(true);
     return { path };
   }
   private refuse(path: string, why: string): { error: string } {
@@ -117,6 +126,7 @@ export class Recorder {
     this.current = null;
     this.stopping.add(r);
     this.deps.tuning.end();
+    this.deps.active?.(false);
     r.done = this.close(r, timeoutMs);
     return r.done;
   }
@@ -223,6 +233,7 @@ export class Recorder {
     if (this.current === r) {
       this.current = null;
       this.deps.tuning.end();
+      this.deps.active?.(false);
     }
     this.error = why;
     this.deps.log?.(`recording: write failed ${r.path}: ${why}`);

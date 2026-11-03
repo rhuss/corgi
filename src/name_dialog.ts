@@ -27,17 +27,36 @@ export type Target =
   /** The shell new panes run, typed from the shell picker. */
   | { shell: null }
   /** The new-workspace dialog's folder field. */
-  | { folder: null };
+  | { folder: null }
+  /** The file a voice transcript is recorded into, in the folder dialog. */
+  | { transcript: null };
 export const targetKind = (
   t: Target,
-): "pane" | "rename" | "workspace_name" | "agent_command" | "agent_name" | "agent" | "fork" | "shell" | "folder" =>
-  Object.keys(t)[0] as any;
+):
+  | "pane"
+  | "rename"
+  | "workspace_name"
+  | "agent_command"
+  | "agent_name"
+  | "agent"
+  | "fork"
+  | "shell"
+  | "folder"
+  | "transcript" => Object.keys(t)[0] as any;
 /** Whether names keep non-ASCII text, which the agents' own names carry. */
 function unicodeTarget(t: Target): boolean {
   return (
-    "agent_name" in t || "agent_command" in t || "agent" in t || "fork" in t || "folder" in t || "workspace_name" in t
+    "agent_name" in t ||
+    "agent_command" in t ||
+    "agent" in t ||
+    "fork" in t ||
+    "folder" in t ||
+    "workspace_name" in t ||
+    "transcript" in t
   );
 }
+/** The longest file name most file systems take, in bytes. */
+const file_name_limit = 255;
 export type Result = "none" | "save" | "cancel";
 /** The longest name, in bytes, outside launch commands. */
 export const name_limit = 80;
@@ -86,7 +105,13 @@ export function writeField(
 }
 /** The longest text, in bytes, a target takes. */
 function limit(t: Target): number {
-  return "agent_name" in t ? agentName.limit : "agent_command" in t || "folder" in t ? max_length : name_limit;
+  return "agent_name" in t
+    ? agentName.limit
+    : "agent_command" in t || "folder" in t
+      ? max_length
+      : "transcript" in t
+        ? file_name_limit
+        : name_limit;
 }
 export type Hit =
   | { tag: "none" }
@@ -577,6 +602,8 @@ export class View {
         return i18n.t`Fork this agent`;
       case "shell":
         return i18n.t`Shell for new panes`;
+      case "transcript":
+        return i18n.t`Record a transcript`;
       default:
         return (d.target as { workspace_name: number | null }).workspace_name === null
           ? i18n.t`New workspace`
@@ -602,9 +629,11 @@ export class View {
           ? i18n.t`Could not save command; max 2048 bytes.`
           : kind === "workspace_name" && !d.name()
             ? i18n.t`Enter a workspace name.`
-            : kind === "shell"
-              ? i18n.t`No executable shell there.`
-              : i18n.t`Could not save. Check folder or capacity.`;
+            : kind === "transcript"
+              ? i18n.t`Enter a file name.`
+              : kind === "shell"
+                ? i18n.t`No executable shell there.`
+                : i18n.t`Could not save. Check folder or capacity.`;
       w.write(
         `\x1b[${v.title_y + 2};${left + 1}H` + new Style({ fg: "hot", bg: "surface" }).sgr() + clipped(msg, room),
       );

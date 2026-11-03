@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { flags, message, quitter, lateMessage } from "./main";
+import { flags, message, quitter, lateMessage, muteWhileRecording } from "./main";
 import { Recorder } from "./recorder";
 import type { Tuning } from "./tuning";
 import type { Utterance } from "./session";
@@ -173,4 +173,55 @@ test("quitting without a recording quits at once", () => {
   ).press();
   expect(quits).toBe(1);
   expect(view.finishing).toBe(false);
+});
+
+/** A session's shared mute, counting what was sent. */
+function mutable(muted: boolean) {
+  const sent: boolean[] = [];
+  const session = {
+    muted,
+    setMuted(m: boolean) {
+      sent.push(m);
+      session.muted = m;
+    },
+  };
+  return { session, sent };
+}
+
+test("a recording mutes voice mode and Corgi, and stopping unmutes them", () => {
+  const { session, sent } = mutable(false),
+    recording = muteWhileRecording(session);
+  recording(true);
+  expect(session.muted).toBe(true);
+  recording(false);
+  expect(session.muted).toBe(false);
+  expect(sent).toEqual([true, false]);
+});
+
+test("a mute that was on before the recording stays on after it", () => {
+  const { session, sent } = mutable(true),
+    recording = muteWhileRecording(session);
+  recording(true);
+  recording(false);
+  expect(session.muted).toBe(true);
+  expect(sent).toEqual([]);
+  // Unmuted during the recording, it goes back to muted, as it was.
+  recording(true);
+  session.setMuted(false);
+  recording(false);
+  expect(session.muted).toBe(true);
+});
+
+test("muting by hand during a recording is undone on stop when it was off before", () => {
+  const { session } = mutable(false),
+    recording = muteWhileRecording(session);
+  recording(true);
+  session.setMuted(false);
+  session.setMuted(true);
+  recording(false);
+  expect(session.muted).toBe(false);
+  // An end without a start changes nothing.
+  session.setMuted(true);
+  recording(false);
+  expect(session.muted).toBe(true);
 });
