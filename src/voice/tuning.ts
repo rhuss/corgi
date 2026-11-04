@@ -1,6 +1,7 @@
 //! The segmenter values in effect. Outside a recording the dictation set
 //! applies; while one runs (also paused) the recording set does. Threshold and
-//! silence changes go to whichever set is active; the other timings are shared.
+//! silence changes go to whichever set is active, though a threshold set during
+//! a recording ends with it; the other timings are shared.
 import type { Segmenter, Timing } from "./segmenter";
 import type { RecordingSettings } from "./settings";
 
@@ -38,11 +39,13 @@ export class Tuning {
   get active(): "dictation" | "recording" {
     return this.mode;
   }
-  /** The threshold in effect. A recording that has not set its own follows the
-   * dictation one, which cannot change while it runs. */
+  /** A threshold set during the current recording; every recording starts without one. */
+  private adjusted: number | null = null;
+  /** The threshold in effect. A recording starts from `recording.threshold`, or
+   * without one from the dictation threshold, which cannot change while it runs. */
   get threshold(): number {
     return this.mode === "recording"
-      ? (this.recording.threshold ?? this.dictation.threshold)
+      ? (this.adjusted ?? this.recording.threshold ?? this.dictation.threshold)
       : this.dictation.threshold;
   }
   /** All timings in effect, in seconds. */
@@ -56,6 +59,7 @@ export class Tuning {
   /** A recording starts: its set applies. */
   begin(): void {
     this.mode = "recording";
+    this.adjusted = null;
     this.target.setThreshold(this.threshold);
     this.target.setTiming("silence", this.recording.silence);
     this.target.setCap(this.recording.max_chunk);
@@ -63,13 +67,14 @@ export class Tuning {
   /** The recording stopped: the dictation set applies again. */
   end(): void {
     this.mode = "dictation";
+    this.adjusted = null;
     this.target.setThreshold(this.dictation.threshold);
     this.target.setTiming("silence", this.dictation.silence);
     this.target.setCap(dictation_cap);
   }
-  /** Sets the active threshold. Set during a recording, it stays for later ones. */
+  /** Sets the active threshold. Set during a recording, it lasts until that recording stops. */
   setThreshold(pct: number): void {
-    if (this.mode === "recording") this.recording.threshold = pct;
+    if (this.mode === "recording") this.adjusted = pct;
     else this.dictation.threshold = pct;
     this.target.setThreshold(pct);
   }

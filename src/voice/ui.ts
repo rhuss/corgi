@@ -62,7 +62,7 @@ const seconds = (v: number) => `${v} s`;
 const help_entries: [string, string][] = [
   [
     "threshold",
-    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel (in the reading view, only above the line under the options; below it, it scrolls). Raise it in a noisy room; lower it when quiet words are missed. Changed during a recording, it is the recording's threshold, which later recordings keep.",
+    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel (in the reading view, only above the line under the options; below it, it scrolls). Raise it in a noisy room; lower it when quiet words are missed. Changed during a recording, it lasts until the recording stops; every recording starts from the standard value.",
   ],
   [
     "silence",
