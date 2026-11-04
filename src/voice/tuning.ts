@@ -42,7 +42,7 @@ export class Tuning {
   /** A threshold set during the current recording; every recording starts without one. */
   private adjusted: number | null = null;
   /** The threshold in effect. A recording starts from `recording.threshold`, or
-   * without one from the dictation threshold, which cannot change while it runs. */
+   * when that is null from the dictation threshold, which cannot change while it runs. */
   get threshold(): number {
     return this.mode === "recording"
       ? (this.adjusted ?? this.recording.threshold ?? this.dictation.threshold)

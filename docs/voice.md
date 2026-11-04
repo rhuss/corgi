@@ -251,8 +251,8 @@ While a recording exists, running or paused, its threshold, silence and
 text then arrives in shorter pieces. Stopping restores the dictation values.
 
 Changing the threshold (`+`/`-`, the wheel) during a recording lasts until the
-recording stops: every recording starts from `recording.threshold`, or from
-the dictation threshold in effect when that is unset. Changing the silence
+recording stops: every recording starts from `recording.threshold` (20 by
+default), or from the dictation threshold in effect when that is `null`. Changing the silence
 (Options) during a recording changes the recording's value, and later
 recordings in the same run keep it. Burst, pre-roll and min speech are shared
 and stay as they are. The Options row shows the values in effect.
@@ -340,7 +340,7 @@ running voice mode. Every field is optional.
 | `speech_filter` | `true` | `--no-filter` |
 | `device` | system default | `--device ID` |
 | `transcripts` | `$XDG_DATA_HOME/corgi/transcripts`, or `~/.local/share/corgi/transcripts` without `XDG_DATA_HOME`; an absolute folder or one starting with `~/` | `--transcripts DIR` |
-| `recording.threshold` | follows the dictation threshold; a whole number, 0 to 100 | |
+| `recording.threshold` | 20, a whole number, 0 to 100; `null` follows the dictation threshold | |
 | `recording.silence` | 1.0 seconds, 0.5 to 10: ends a passage while recording | |
 | `recording.max_chunk` | 10 seconds, 5 to 30: longest passage while recording | |
 | `recording.pause_break` | 2.0 seconds, 0.5 to 30: a longer silence starts a new contribution | |
