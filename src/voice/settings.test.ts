@@ -25,7 +25,7 @@ test("a missing file gives the defaults without notices", () => {
       speech_filter: true,
       device: null,
       transcripts: null,
-      recording: { threshold: null, silence: 1.0, max_chunk: 10, pause_break: 2.0 },
+      recording: { threshold: 20, silence: 1.0, max_chunk: 10, pause_break: 2.0 },
     },
     notices: [],
   });
@@ -142,7 +142,7 @@ test("transcripts and recording are read", () => {
     file("recording_null.json", JSON.stringify({ recording: { threshold: null, silence: 1.5 } })),
   );
   expect(notices).toEqual([]);
-  expect(s.recording).toEqual({ ...settings.default_recording, silence: 1.5 });
+  expect(s.recording).toEqual({ ...settings.default_recording, threshold: null, silence: 1.5 });
 });
 
 test("a bad transcripts value falls back to the default with one notice", () => {
@@ -158,8 +158,8 @@ test("a bad transcripts value falls back to the default with one notice", () => 
 test("each invalid recording field falls back on its own", () => {
   const valid = { threshold: 30, silence: 0.8, max_chunk: 20, pause_break: 3 };
   const cases: [Record<string, unknown>, string][] = [
-    [{ threshold: 101 }, 'voice.json: "recording.threshold" must be 0..100; using the dictation threshold'],
-    [{ threshold: 12.5 }, 'voice.json: "recording.threshold" must be 0..100; using the dictation threshold'],
+    [{ threshold: 101 }, 'voice.json: "recording.threshold" must be 0..100; using 20'],
+    [{ threshold: 12.5 }, 'voice.json: "recording.threshold" must be 0..100; using 20'],
     [{ silence: 0.1 }, 'voice.json: "recording.silence" must be 0.5..10; using 1'],
     [{ silence: "long" }, 'voice.json: "recording.silence" must be 0.5..10; using 1'],
     [{ max_chunk: 4 }, 'voice.json: "recording.max_chunk" must be 5..30; using 10'],

@@ -10,7 +10,7 @@ import { default_timing } from "./segmenter";
 
 /** Speech detection while a transcript is recorded; times in seconds. */
 export type RecordingSettings = {
-  /** null follows the dictation threshold. */
+  /** 20 by default, as in cc-deck; null follows the dictation threshold. */
   threshold: number | null;
   silence: number;
   max_chunk: number;
@@ -38,7 +38,7 @@ export type VoiceSettings = {
 /** `--transcripts DIR` is kept as typed; `transcriptsFolder` resolves it. */
 export type VoiceFlags = Partial<Omit<VoiceSettings, "transcripts" | "recording">> & { transcripts?: string };
 
-export const default_recording: RecordingSettings = { threshold: null, silence: 1.0, max_chunk: 10, pause_break: 2.0 };
+export const default_recording: RecordingSettings = { threshold: 20, silence: 1.0, max_chunk: 10, pause_break: 2.0 };
 export const defaults = (): VoiceSettings => ({
   threshold: level.default_threshold,
   ...default_timing,
@@ -131,8 +131,9 @@ function readRecording(value: unknown, out: RecordingSettings, notices: string[]
       notices.push(`voice.json: "recording.${key}" must be ${rule}; using ${using}`);
     }
   };
-  // null, the default, may also be written out.
-  if (r.threshold !== null) field("threshold", "0..100", percent);
+  // A null threshold follows the dictation one.
+  if (r.threshold === null) out.threshold = null;
+  else field("threshold", "0..100", percent);
   field("silence", "0.5..10", seconds(0.5, 10));
   field("max_chunk", "5..30", seconds(5, 30));
   field("pause_break", "0.5..30", seconds(0.5, 30));
