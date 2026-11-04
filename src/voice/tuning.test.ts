@@ -75,7 +75,7 @@ test("end restores the dictation values changed before the recording", () => {
   expect(tuning.timing.silence).toBe(3);
 });
 
-test("values adjusted during a recording stay for the next one", () => {
+test("a threshold adjusted during a recording ends with it; the silence stays for the next one", () => {
   const { seg, tuning } = make();
   tuning.begin();
   tuning.setThreshold(55);
@@ -83,11 +83,21 @@ test("values adjusted during a recording stay for the next one", () => {
   tuning.end();
   tuning.setThreshold(40);
   tuning.begin();
-  expect([seg.threshold, seg.timing.silence, seg.cap]).toEqual([55, 2, 10]);
-  expect(tuning.threshold).toBe(55);
+  expect([seg.threshold, seg.timing.silence, seg.cap]).toEqual([40, 2, 10]);
+  expect(tuning.threshold).toBe(40);
 });
 
-test("an unset recording threshold follows dictation until adjusted in a recording", () => {
+test("every recording starts from the configured recording threshold", () => {
+  const { seg, tuning } = make({ threshold: 60 });
+  tuning.begin();
+  tuning.setThreshold(70);
+  tuning.end();
+  tuning.begin();
+  expect(seg.threshold).toBe(60);
+  expect(tuning.threshold).toBe(60);
+});
+
+test("an unset recording threshold follows dictation, also after an adjusted recording", () => {
   const { seg, tuning } = make();
   tuning.begin();
   expect(seg.threshold).toBe(44);
@@ -97,13 +107,14 @@ test("an unset recording threshold follows dictation until adjusted in a recordi
   tuning.setThreshold(48);
   tuning.begin();
   expect(seg.threshold).toBe(48);
-  // Adjusted now, it no longer follows.
+  // Adjusted now, it holds until this recording stops.
   tuning.setThreshold(52);
+  expect(tuning.threshold).toBe(52);
   tuning.end();
   expect(seg.threshold).toBe(48);
   tuning.setThreshold(30);
   tuning.begin();
-  expect(seg.threshold).toBe(52);
+  expect(seg.threshold).toBe(30);
 });
 
 test("burst, pre-roll and minimum speech are shared and not undone by end", () => {

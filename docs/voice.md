@@ -250,12 +250,12 @@ While a recording exists, running or paused, its threshold, silence and
 `max_chunk` apply to everything voice mode hears, dictation included. Typed
 text then arrives in shorter pieces. Stopping restores the dictation values.
 
-Changing the threshold (`+`/`-`, the wheel) or the silence (Options) during a
-recording changes the recording's values, and later recordings in the same
-run keep them. Burst, pre-roll and min speech are shared and stay as they are.
-The Options row shows the values in effect. With `recording.threshold` unset,
-each recording starts from the dictation threshold in effect, until you
-change it during a recording.
+Changing the threshold (`+`/`-`, the wheel) during a recording lasts until the
+recording stops: every recording starts from `recording.threshold`, or from
+the dictation threshold in effect when that is unset. Changing the silence
+(Options) during a recording changes the recording's value, and later
+recordings in the same run keep it. Burst, pre-roll and min speech are shared
+and stay as they are. The Options row shows the values in effect.
 
 ## Reading view
 
