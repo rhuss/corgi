@@ -12,7 +12,10 @@ import * as models from "./models";
 import * as setup from "./setup";
 import * as capture from "./capture";
 import * as ui from "./ui";
+import * as transcript from "./transcript";
 import { Segmenter } from "./segmenter";
+import { Tuning } from "./tuning";
+import { Recorder } from "./recorder";
 import { Server } from "./whisper";
 import { VoiceSession } from "./session";
 import { LocalLink, type VoiceLink } from "./link";
@@ -56,6 +59,11 @@ export function flags(args: string[]): Flags {
       case "--device":
         if (!value) throw Error("Usage");
         out.device = value;
+        i++;
+        break;
+      case "--transcripts":
+        if (!value) throw Error("Usage");
+        out.transcripts = value;
         i++;
         break;
       case "--no-filter":
@@ -166,6 +174,24 @@ async function voice(
     host ? SshLink.connect(host, { batch: connected, signal }) : LocalLink.connect(socket);
   const timing = { silence: s.silence, pre_roll: s.pre_roll, min_speech: s.min_speech, burst: s.burst },
     segmenter = new Segmenter({ threshold: s.threshold, timing, now: Date.now });
+  // Transcripts stay on this machine, whatever runtime the text goes to.
+  const tuning = new Tuning(segmenter, {
+      dictation: { threshold: s.threshold, silence: s.silence },
+      recording: s.recording,
+      shared: { burst: s.burst, pre_roll: s.pre_roll, min_speech: s.min_speech },
+      warn: text => recorder.notice("error", text),
+    }),
+    recorder = new Recorder({
+      tuning,
+      now: Date.now,
+      log: line => logger.info(line),
+      // The session exists by the time a recording starts.
+      active: on => muting(on),
+    }),
+    folder = settings.transcriptsFolder(s, process.env, process.cwd()),
+    home = settings.home(process.env),
+    // The one place a typed transcript name becomes a file.
+    resolveName = (name: string, dir: string) => transcript.resolve(name, dir, home);
   // The server starts after the first connection, so a refusal starts nothing.
   let server: Server | null = null,
     restarting = false;
@@ -186,7 +212,9 @@ async function voice(
     now: Date.now,
     pane,
     log: line => logger.info(line),
+    recorder,
   });
+  const muting = muteWhileRecording(session);
   // Over SSH, the first connection may prompt; it happens before the UI takes the terminal.
   try {
     await session.connect();
@@ -285,7 +313,8 @@ async function voice(
     for (const signal of signals) process.off(signal, onSignal);
   }
   let quit!: () => void;
-  const stopped = new Promise<void>(resolve => (quit = resolve));
+  const stopped = new Promise<void>(resolve => (quit = resolve)),
+    quitting = quitter(recorder, () => view, quit);
   const view = new ui.VoiceUi(session, {
     target: host ?? "local",
     device: s.device ?? "(default)",
@@ -293,18 +322,86 @@ async function voice(
     threshold: s.threshold,
     filter: vadModel ? "on" : s.speech_filter ? "not installed" : "off",
     timing,
-    setTiming: (name, seconds) => segmenter.setTiming(name, seconds),
+    setTiming: (name, seconds) => tuning.setTiming(name, seconds),
     toggleFilter,
     notices,
-    setThreshold: pct => segmenter.setThreshold(pct),
+    setThreshold: pct => tuning.setThreshold(pct),
     listDevices: () => capture.listDevices(),
     switchDevice: device => {
       logger.info("microphone switched", { device: device.id });
       mic?.switch(device.id);
     },
-    quit: () => quit(),
+    quit: quitting.press,
+    recorder,
+    tuning,
+    folder,
+    resolveName,
+    startRecording: path => recorder.start(path),
+    stopRecording: () => void recorder.stop(),
   });
-  await ui.run(view, stopped, cleanup);
+  // A signal ends voice mode at once; the transcript is closed first.
+  await ui.run(view, stopped, async () => {
+    recorder.finish();
+    await cleanup();
+  });
+  const finished = quitting.finish();
   await cleanup();
+  for (const { path, late } of finished) if (late) process.stderr.write(lateMessage(path, late));
   return 0;
+}
+/** Muting while a recording runs: it records the conversation, not dictation.
+ * A recording mutes voice mode, and Corgi with it, when it starts; when it
+ * ends, the mute goes back to what it was before, so a mute that was on stays on. */
+export function muteWhileRecording(session: {
+  muted: boolean;
+  setMuted: (muted: boolean) => void;
+}): (recording: boolean) => void {
+  let before: boolean | null = null;
+  return recording => {
+    if (recording) {
+      before = session.muted;
+      if (!before) session.setMuted(true);
+    } else if (before !== null) {
+      if (session.muted !== before) session.setMuted(before);
+      before = null;
+    }
+  };
+}
+/** Quitting voice mode: with a recording, the first `press` stops it and waits
+ * for its transcript, with the window saying so, and a second press ends the
+ * wait. Once the window is gone, `finish` closes what is left and returns
+ * each recording closed on the way, with how many passages it left out. */
+export function quitter(
+  recorder: Recorder,
+  view: () => { finishing: boolean },
+  quit: () => void,
+): { press: () => void; finish: () => { path: string; late: number }[] } {
+  const finished: { path: string; late: number }[] = [];
+  let given_up = false;
+  return {
+    press: () => {
+      const v = view();
+      if (v.finishing || (!recorder.current && !recorder.stopping.size)) return quit();
+      v.finishing = true;
+      void recorder.stop();
+      void Promise.all([...recorder.stopping].map(r => r.done)).then(
+        results => {
+          // After a second press, `finish` reports them.
+          if (!given_up) for (const r of results) if (r) finished.push(r);
+          quit();
+        },
+        () => quit(),
+      );
+    },
+    finish: () => {
+      given_up = true;
+      finished.push(...recorder.finish());
+      return finished;
+    },
+  };
+}
+/** The line on the terminal for passages a recording left out on quit. */
+export function lateMessage(path: string, late: number): string {
+  const shown = path.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+  return `corgi: ${late} passage${late === 1 ? "" : "s"} of ${shown} did not finish in time and ${late === 1 ? "is" : "are"} not in the transcript\n`;
 }

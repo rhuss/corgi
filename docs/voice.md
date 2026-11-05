@@ -66,15 +66,19 @@ The `♫` before the title adds what speech is doing: a slightly different
 green while listening, recording or transcribing, and grey while voice mode
 is muted, not connected to the runtime, or without a viewer. Click it, or the
 mode, to mute or unmute. Without a viewer there is nowhere to type, so voice
-mode holds off until one attaches, and says so at the top of the history.
+mode holds off until one attaches, and says so at the top of the history:
+`No Corgi window is attached; nothing is typed until one is`. A running
+[transcript recording](#record-a-transcript) keeps listening anyway.
 
 The history lists each utterance with the time you said it and, once typed,
 how long the text took after you stopped speaking, as in
 `✓ 14:02:31 (156ms) text`. A `✗` row says why text was not typed; one that
 got no answer in time may still have been typed. What you say while muted, or
-what muting cuts off, leaves no row.
+what muting cuts off, leaves no row, unless a recording writes it.
 
 An utterance ends after 2.5 seconds of silence and is capped at 30 seconds.
+While a recording exists, its own silence and `max_chunk` (10 seconds) apply
+instead.
 Short peaks under 0.1 seconds, such as music below your voice, don't keep it
 open. An utterance that follows another in the same pane is joined to it with
 one space; after anything else you type, it starts fresh.
@@ -90,9 +94,12 @@ the history says "focused pane is the voice pane".
 | --- | --- |
 | `m` | Mute or unmute |
 | `?` | Explain the options and how each changes what becomes text |
-| `+` / `-` | Raise or lower the threshold by 2 (or turn the mouse wheel anywhere in the window) |
+| `+` / `-` | Raise or lower the threshold by 2 (or turn the mouse wheel anywhere in the window; in the reading view, above the line under the options) |
 | `f` | Turn the speech filter on or off; restarts whisper-server, about a second, and brings it back after a crash |
 | `d` | Pick another microphone |
+| `r` | Start a recording, or pause and resume it |
+| `R` | Stop the recording |
+| `v` | Open or close the reading view, while there is a recording |
 | `j` / `k`, `↓` / `↑` | Scroll the history by a row |
 | `Ctrl+D` / `Ctrl+U` | Scroll by half a page |
 | `Ctrl+F` / `Ctrl+B`, `PgDn` / `PgUp` | Scroll by a page |
@@ -112,8 +119,171 @@ while it is muted; click it to toggle. Beside the corgi badge the title
 shortens to make room; with no voice attached it is gone.
 `corgi action voice-mute` does the same from a script.
 
-Muting drops anything not yet typed. When the microphone or Whisper fails,
-the indicator shows muted and unmuting has no effect until it recovers.
+Muting drops anything not yet typed, though a running recording still writes
+it. Starting a recording mutes, and stopping it unmutes again, unless voice
+mode was muted before; see [Mute, pause and quit](#mute-pause-and-quit). When the microphone or Whisper fails, the indicator shows muted and
+unmuting has no effect until it recovers.
+
+## Record a transcript
+
+Voice mode can also write what you say to a text file, for a meeting or your
+own notes. A recording mutes dictation while it runs; press `m` to dictate
+too.
+
+| Key | Does |
+| --- | --- |
+| `r` | No recording: open the file dialog. Recording: pause. Paused: resume |
+| `R` | Stop, whether running or paused |
+| `v` | Open the [reading view](#reading-view) |
+
+`r` opens the dialog Corgi uses for a new workspace: the file name above, the
+folder below it with the folders in it. The name starts as today's date,
+`YYYY-MM-DD-.txt` in local time, with the cursor before `.txt`, so you can type
+a description straight away, such as `2026-05-11-standup.txt`. The folder
+starts in the transcript folder, or where the last recording of this run went.
+
+Tab moves between the name and the folder. In the folder, ↑ and ↓ pick a
+folder, → opens it and ← goes up; a folder that isn't there yet is offered as
+`+ Create`, and is made for you alone (0700). Enter starts the recording and
+Esc cancels; Ctrl+C cancels and quits. The line under the title shows the file
+the name and folder resolve to, `appends to the existing file: PATH`, or why
+the name is refused: `name is empty` or
+`no .. in the name; pick the folder below`.
+
+The name may contain sub-folders, which are created as needed. `~/` means your
+home folder, and an absolute path is used as given. No extension is added.
+
+While recording, the mode row shows a red `● REC`; while paused, `⏸ paused`.
+The footer gains `r record|pause|resume`, `R stop` and `v read|back`, and
+drops keys from the right when the window is narrow. The history marks each
+step:
+
+| Row | Means |
+| --- | --- |
+| `○ recording started: PATH` | The file is open |
+| `○ paused`, `○ resumed` | Passages in between are not written |
+| `○ stopped: PATH` | The file is closed |
+| `● TEXT` | Written but not typed, because voice mode is muted, as a recording leaves it |
+| `● TEXT · recorded, not typed (REASON)` | Written but not typed for another reason: no viewer attached, not connected, a backlog, or the delivery failed |
+| `● TEXT · recorded (no answer in time; may have been typed)` | Written, and sent to be typed, but the runtime did not answer in time, so it may have been typed |
+| `✗ recording not started: REASON` | The file could not be created or opened |
+| `✗ recording stopped: REASON` | A write failed. The recording closes, the text written so far stays, and dictation goes on |
+| `✗ recording "pause_break" (P s) is not longer than "silence" (S s), ...` | A silence chosen under `Options` during a recording leaves every passage its own contribution |
+| `✗ N passages did not finish in time` | They were still being transcribed when the recording closed, and are not in the file |
+
+After a failed start or write, the status line also says
+`Cannot write the transcript: REASON`.
+
+### The file
+
+Transcripts go to `~/.local/share/corgi/transcripts/` (or
+`$XDG_DATA_HOME/corgi/transcripts/`) on the machine running voice mode, unless
+[`transcripts` or `--transcripts`](#settings) names another folder. Each line
+is one passage. A blank line comes before each passage that starts a new
+contribution, but never at the top of a new file. There are no timestamps or
+speaker labels:
+
+```text
+Okay, so let's go over the plan for today.
+First the release notes.
+
+Sounds good. I have a question about the schedule.
+
+Sure, go ahead.
+```
+
+Files are UTF-8 with `\n` line ends. A new transcript is readable and writable
+only by you (0600); folders voice mode creates are 0700. Each passage is
+synced to disk as it is written. Choosing an existing file appends to it after
+exactly one blank line: a missing final line break is added first, and a
+trailing blank line is reused. Nothing is overwritten, and the existing file
+keeps its permissions.
+
+### Contributions
+
+Voice mode doesn't tell speakers apart by their voice. A passage starts a new
+contribution when:
+
+- the silence before it is longer than `recording.pause_break` (2 seconds),
+  measured from the last loud audio of the previous passage to the first of
+  this one, without pre-roll;
+- its text starts with a hyphen, en dash or em dash and a space; the dash is
+  left out of the file and the reading view, but dictation types it;
+- it is the first passage after starting, or the first one you started saying
+  after you paused, once you resume. A passage you said before the pause that
+  is written only after the resume stays with what came before it.
+
+A passage cut at `max_chunk` continues the same contribution. Passages the
+filter removes (filler words, sound markers, lines Whisper invents from
+silence) are not written.
+
+### Mute, pause and quit
+
+Starting a recording mutes voice mode, and Corgi with it, so the conversation
+goes to the file and not into a pane. Stopping it, with `R`, by quitting or
+after a write error, puts the mute back as it was before the recording:
+unmuted, unless it was already muted then. Press `m` during a recording to
+dictate as well; stopping still puts the earlier state back.
+
+While a recording runs, voice mode keeps listening when muted, with no Corgi
+window attached, or with no runtime to reach. It writes the passages and
+doesn't type them; the same goes for a passage you were saying when you muted
+or the viewer left, and for one you started while muted or with no viewer
+attached, even if that changes before it ends. Without a recording, or with the recording paused, muting
+drops the audio.
+
+While paused, nothing is written. Still muted, as the recording left it, the
+audio is dropped; unmuted, passages show in the history and are typed as usual.
+
+Quitting with a recording (`q` or Ctrl+C) keeps the window open with
+`Finishing transcript…` while passages still being transcribed finish, for
+up to 10 seconds. Press `q` or Ctrl+C again to stop waiting. If any were left
+out, voice mode prints this after the window closes:
+`corgi: N passages of PATH did not finish in time and are not in the transcript`.
+
+Stopping with `R` removes the REC mark at once, then waits up to 10 seconds in
+the background before it closes the file.
+
+### Timing while recording
+
+While a recording exists, running or paused, its threshold, silence and
+`max_chunk` apply to everything voice mode hears, dictation included. Typed
+text then arrives in shorter pieces. Stopping restores the dictation values.
+
+Changing the threshold (`+`/`-`, the wheel) during a recording lasts until the
+recording stops: every recording starts from `recording.threshold` (20 by
+default), or from the dictation threshold in effect when that is `null`. Changing the silence
+(Options) during a recording changes the recording's value, and later
+recordings in the same run keep it. Burst, pre-roll and min speech are shared
+and stay as they are. The Options row shows the values in effect.
+
+## Reading view
+
+`v` opens the reading view while a recording runs or is paused; without one,
+the status line says `The reading view needs a recording: press r`. `v` or
+Esc closes it, and it closes by itself when the recording stops.
+
+It replaces the history with the current recording, one block per
+contribution: the local time its first loud audio began (`HH:MM:SS`, without
+pre-roll), then its text, wrapped to the window. A `▌` bar in front of each
+block alternates between the theme's accent green and its warm color. The view
+shows only what was written: muted passages are there, paused ones are not.
+
+The view follows new speech at the bottom. Scroll up and it stops following;
+the footer then shows `N new below · G`, and `G` or End jumps back and follows
+again.
+
+| Key | Does |
+| --- | --- |
+| `j` / `k`, `↓` / `↑` | Scroll by a line |
+| Mouse wheel, below the line under the options | Scroll by three lines |
+| Drag the scroll bar, or click its track | Scroll to that place |
+| `Ctrl+D` / `Ctrl+U` | Scroll by half a page |
+| `Ctrl+F` / `Ctrl+B`, `PgDn` / `PgUp` | Scroll by a page |
+| `g`, Home / `G`, End | Oldest / newest |
+
+The level meter and `T:` stay, and `m`, `+`/`-`, `r`, `R` and `q`
+keep working.
 
 ## Remote runtimes
 
@@ -126,7 +296,8 @@ Voice mode runs here, with your microphone and model, and starts
 prompts come before the screen takes over; reconnects use `BatchMode`, so set up
 key authentication for unattended use. The host needs a Corgi with voice
 support and a running runtime. Your local `voice.json` applies; a `voice.json`
-on the host is ignored.
+on the host is ignored. Transcripts are written here too, on the machine with
+the microphone; nothing is stored on the host.
 
 If the link drops, what you say meanwhile fails as "not connected" and is
 never typed later. Voice mode reconnects every 5 seconds and restores its mute
@@ -146,7 +317,14 @@ running voice mode. Every field is optional.
   "burst": 0.1,
   "model": "base.en",
   "speech_filter": true,
-  "device": null
+  "device": null,
+  "transcripts": "~/notes/transcripts",
+  "recording": {
+    "threshold": 40,
+    "silence": 1.0,
+    "max_chunk": 10,
+    "pause_break": 2.0
+  }
 }
 ```
 
@@ -161,14 +339,31 @@ running voice mode. Every field is optional.
 | `port` | a free port each run, for whisper-server on 127.0.0.1 | `--port PORT` |
 | `speech_filter` | `true` | `--no-filter` |
 | `device` | system default | `--device ID` |
+| `transcripts` | `$XDG_DATA_HOME/corgi/transcripts`, or `~/.local/share/corgi/transcripts` without `XDG_DATA_HOME`; an absolute folder or one starting with `~/` | `--transcripts DIR` |
+| `recording.threshold` | 20, a whole number, 0 to 100; `null` follows the dictation threshold | |
+| `recording.silence` | 1.0 seconds, 0.5 to 10: ends a passage while recording | |
+| `recording.max_chunk` | 10 seconds, 5 to 30: longest passage while recording | |
+| `recording.pause_break` | 2.0 seconds, 0.5 to 30: a longer silence starts a new contribution | |
 
 A bad field falls back to its default, and voice mode shows a notice naming
-it. Flags apply to one run. whisper-server answers anything on its port
+it, such as `voice.json: "recording.silence" must be 0.5..10; using 1`. A
+`recording` that is not an object uses all its defaults. When `pause_break` is
+not longer than `silence`, a notice says every passage starts a new
+contribution, and both values are kept. The history says so too when a
+silence chosen under `Options` during a recording reaches `pause_break`. Changes to `voice.json` apply the next
+time voice mode starts.
+
+Flags apply to one run. `--transcripts DIR` is relative to the folder you
+started `corgi voice` in. The transcript folder comes from the flag, then
+`transcripts`, then `$XDG_DATA_HOME/corgi/transcripts`, then
+`~/.local/share/corgi/transcripts`. whisper-server answers anything on its port
 without authentication, so leave `port` unset unless you need a fixed one.
 
 `--verbose` appends one line per utterance (duration, transcription and
 delivery times, outcome) and whisper-server's health to `voice.log` beside
-`voice.json`. Nothing goes to the screen.
+`voice.json`. It also logs when a recording starts, pauses, resumes and stops,
+with the file path, how long a stop waited (`waited_ms`, `late`), and write
+errors, but never the transcribed text. Nothing goes to the screen.
 
 ## Troubleshooting
 
@@ -184,3 +379,5 @@ delivery times, outcome) and whisper-server's health to `voice.log` beside
 | "The Whisper server stopped" | Press `f` for a fresh one (it switches the filter), or quit and start voice mode again |
 | Background noise becomes text | Raise the threshold with `+`, or keep the speech filter on |
 | Quiet speech is missed | Lower the threshold with `-` until the meter crosses the marker as you speak |
+| "Cannot write the transcript" | The status line and history name the system's error. Check the folder's permissions, free space, and the path; a name that is an existing folder fails too. Dictation keeps working |
+| Every passage is its own block | `recording.pause_break` is not longer than `recording.silence`, or shorter than the speakers' pauses. Raise `pause_break` above `silence` |
