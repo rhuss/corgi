@@ -26,11 +26,11 @@ volume, and incomplete provider data can leave gaps.
 
 **Jump to attention** (`prefix f` in the Corgi preset) visits waiting agents
 before completed ones. Visiting acknowledges attention without answering the
-agent. Completion sounds stay quiet for a pane focused in a watching viewer;
+agent; a blocked agent stays a jump target until answered, and the focused one
+goes last. Completion sounds stay quiet for a pane focused in a watching viewer;
 input requests can still sound. **prefix m** toggles sound in the Corgi preset;
 **prefix M** mutes [voice dictation](voice.md), whose `♫` indicator sits
 in the sidebar's title row while voice mode runs.
-
 Hover an agent to inspect its activity, children, usage and background commands.
 A `≥` marks partial usage coverage; **Last reported** means a task list may
 be stale. These are observations, not process controls or a billing statement.

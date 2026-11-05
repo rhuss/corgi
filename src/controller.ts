@@ -2420,10 +2420,13 @@ export class Controller {
   }
   private attention(): void {
     // Archived workspaces stay out of jumps until one is opened.
-    const target = attention.pick({
-      panes: this.runtime.panes.filter(p => !this.archivedAway(this.runtime.workspaces.owner(p.id)?.id ?? 0)),
-      sessions: this.runtime.sessions.filter(session => !this.archivedAway(session.workspace)),
-    });
+    const target = attention.pick(
+      {
+        panes: this.runtime.panes.filter(p => !this.archivedAway(this.runtime.workspaces.owner(p.id)?.id ?? 0)),
+        sessions: this.runtime.sessions.filter(session => !this.archivedAway(session.workspace)),
+      },
+      this.focused()?.id ?? null,
+    );
     if (!target) this.notice(i18n.t` Nothing needs your attention`);
     else if ("pane" in target) {
       this.focusPane(target.pane);
