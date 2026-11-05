@@ -2269,13 +2269,13 @@ const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
 test("an unset workspace tint draws today's sidebar in every layout", () => {
   const workspaces = tintWorkspaces(6);
-  // Recorded from the sidebar before the tint existed.
+  // Recorded from the sidebar before the tint existed (with the list trailing off at the rule).
   const expected: Record<string, string> = {
-    split: "d5052f7d8edb3ea001c6261db22cf9ed00be8375b8397ff1d01b7c12aeb4a99d",
-    focused: "44b065a3d7f9bafce4d0c3caa614ef327e7b00e7e203d6a0db17ce977f18b6e6",
+    split: "228079185ab64f053b9db435ac29d1cf360ce1a4f8f09a8fc99d53d525085aa0",
+    focused: "47e2dfc8f330a29dbb90f67722b1b517994e4bad1038abcbf7f9b4883465d20d",
     "workspaces drawer": "3720f1ef9efb5fcca05c55ff6c1615924f602e476d0b172ea4aae850aa052feb",
     "agents drawer": "1f41953defdefe7a665de145896653d07b5863674388ebee915e1715366c688a",
-    lists: "d609c9179f2067112ac55e24313971d09f24ae383a17a20f9dc9c025bebaebc6",
+    lists: "c87251f6a4bd5b4c6e1e202f2cd79bc9a99ab39788b2b4273f8cf1129a856bf8",
   };
   const recorded: Record<string, string> = {};
   for (const [name, view] of tintLayouts(workspaces)) {
