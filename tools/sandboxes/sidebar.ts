@@ -1,19 +1,17 @@
 /**
- * The sidebar sandbox: enough workspaces and agents to judge the workspace
- * tint on Visual flourishes, and the hover on workspace rows.
+ * The sidebar sandbox: a crowded sidebar, with more workspaces than fit above
+ * the rule and every workspace's agents, working, waiting, finished and idle,
+ * below it. Enough to judge the workspace tint on Visual flourishes, the hover
+ * on workspace rows, and the list trailing off where the rule cuts it.
  *
- * - api: a Claude agent working and a Codex agent waiting for input.
- * - web: a small server listening on a port, and a Claude agent that finished.
- * - docs: an idle Codex agent.
- * - infra: an idle Claude agent.
- *
- * The readings row is on, so each workspace shows its three rows.
+ * Nine workspaces, each a git repository; web serves a port. The readings row
+ * is on, so each workspace shows its three rows.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { table, type Sandbox, type World } from "../sandbox";
 
-const repos = ["api", "web", "docs", "infra"] as const;
+const repos = ["api", "web", "docs", "infra", "mobile", "billing", "search", "auth", "design"] as const;
 const server = [
   'const server = Bun.serve({ port: 0, fetch: () => new Response("ok from web\\n") });',
   "console.log(`web listening on http://localhost:${server.port}`);",
@@ -39,13 +37,14 @@ export const world: World = {
     );
     const token = Buffer.from(JSON.stringify({ email: "me@example.com", sub: "me@example.com" })).toString("base64url");
     s.write(join(s.home, ".codex/auth.json"), JSON.stringify({ tokens: { id_token: `x.${token}.x` } }));
-    // The readings row on, keeping what `prepareHome` wrote.
+    // The readings row on and every workspace's agents, keeping what
+    // `prepareHome` wrote.
     const prefs = join(s.home, ".local/state/corgi/viewer.json");
     let saved: Record<string, unknown> = {};
     try {
       saved = JSON.parse(readFileSync(prefs, "utf8"));
     } catch {}
-    s.write(prefs, JSON.stringify({ ...saved, resources: { enabled: true } }));
+    s.write(prefs, JSON.stringify({ ...saved, resources: { enabled: true }, agents: "all" }));
   },
 
   arrange(s) {
@@ -82,6 +81,10 @@ export const world: World = {
       [tab("web", "frontend", "claude"), "stop"],
       [tab("docs", "writer", "codex"), null],
       [tab("infra", "ops", "claude"), null],
+      [tab("mobile", "ios", "claude"), "stop"],
+      [tab("billing", "invoices", "codex"), "stop"],
+      [tab("search", "ranker", "claude"), null],
+      [tab("auth", "sessions", "codex"), "block"],
     ];
     const ours = new Set([...made.values()].map(m => m.workspace));
     for (const w of before)
@@ -100,8 +103,11 @@ export const world: World = {
 
   intro(s) {
     return [
-      "Four workspaces above the rule and five agents below: working, waiting, finished and idle.",
+      "Nine workspaces above the rule, more than fit, and nine agents below it: working, waiting, finished and idle.",
       ...table([
+        ["scroll", "the workspace list: its cut end trails off into the rule while more lie below"],
+        ["drag", "the rule up or down to cut the list at another row"],
+        [`${s.prefixName} w`, "focus the workspace list; ↑ ↓ move through it"],
         [`${s.prefixName} i`, "setup: Visual flourishes, then ↓ to Workspace tint"],
         ["← →", "steps the tint by 5; Home is Off, End is the strongest"],
         ["drag", "the bar: the sidebar follows before you let go"],
