@@ -16,12 +16,18 @@ export type Key =
         | "backspace"
         | "cancel"
         | "pageup"
-        | "pagedown";
+        | "pagedown"
+        | "home"
+        | "end";
     }
   | { kind: "text"; text: string }
   /** Ctrl and a letter, as `d` for Ctrl+D. */
   | { kind: "ctrl"; key: string }
   | { kind: "click"; x: number; y: number }
+  /** The pointer moved with the left button held, where the terminal reports motion (mode 1002). */
+  | { kind: "drag"; x: number; y: number }
+  /** The left button let go. */
+  | { kind: "release"; x: number; y: number }
   | { kind: "wheel"; dir: 1 | -1; x: number; y: number };
 
 const named: [string, Key["kind"]][] = [
@@ -36,6 +42,14 @@ const named: [string, Key["kind"]][] = [
   ["\x1b[Z", "backtab"],
   ["\x1b[5~", "pageup"],
   ["\x1b[6~", "pagedown"],
+  ["\x1b[H", "home"],
+  ["\x1bOH", "home"],
+  ["\x1b[1~", "home"],
+  ["\x1b[7~", "home"],
+  ["\x1b[F", "end"],
+  ["\x1bOF", "end"],
+  ["\x1b[4~", "end"],
+  ["\x1b[8~", "end"],
 ];
 /** Where `data` ends inside an escape sequence or a paste, or `data.length`:
  * a read can stop between the bytes of one key, and the rest comes next. */
@@ -55,6 +69,8 @@ export function keys(data: string): Key[] {
         x = Number(mouse[2]) - 1,
         y = Number(mouse[3]) - 1;
       if (mouse[4] === "M" && button === 0) out.push({ kind: "click", x, y });
+      else if (mouse[4] === "M" && button === 32) out.push({ kind: "drag", x, y });
+      else if (mouse[4] === "m" && button === 0) out.push({ kind: "release", x, y });
       else if (mouse[4] === "M" && (button === 64 || button === 65))
         out.push({ kind: "wheel", dir: button === 64 ? 1 : -1, x, y });
       i += mouse[0].length;

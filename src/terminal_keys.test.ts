@@ -19,13 +19,22 @@ test("a read that ends inside a key or a paste is cut before it", () => {
   expect(keys(first.slice(cut) + "B")).toEqual([{ kind: "down" }]);
 });
 
-test("clicks and wheel notches come from SGR mouse reports", () => {
-  expect(keys("\x1b[<0;5;3M\x1b[<0;5;3m")).toEqual([{ kind: "click", x: 4, y: 2 }]);
+test("clicks, drags, releases and wheel notches come from SGR mouse reports", () => {
+  expect(keys("\x1b[<0;5;3M\x1b[<32;5;6M\x1b[<0;5;7m")).toEqual([
+    { kind: "click", x: 4, y: 2 },
+    { kind: "drag", x: 4, y: 5 },
+    { kind: "release", x: 4, y: 6 },
+  ]);
   expect(keys("\x1b[<64;10;3M\x1b[<65;1;1M")).toEqual([
     { kind: "wheel", dir: 1, x: 9, y: 2 },
     { kind: "wheel", dir: -1, x: 0, y: 0 },
   ]);
   expect(keys("\x1b[<2;5;3M\x1b[<35;5;3M")).toEqual([]);
+});
+
+test("Home and End in each terminal's spelling", () => {
+  expect(keys("\x1b[H\x1bOH\x1b[1~\x1b[7~").map(k => k.kind)).toEqual(Array(4).fill("home"));
+  expect(keys("\x1b[F\x1bOF\x1b[4~\x1b[8~").map(k => k.kind)).toEqual(Array(4).fill("end"));
 });
 
 test("named keys, text and pastes", () => {

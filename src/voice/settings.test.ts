@@ -1,7 +1,7 @@
 import { test, expect, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import * as settings from "./settings";
 
 const dir = mkdtempSync(join(tmpdir(), "corgi-voice-settings-"));
@@ -24,6 +24,8 @@ test("a missing file gives the defaults without notices", () => {
       port: null,
       speech_filter: true,
       device: null,
+      transcripts: null,
+      recording: { threshold: 20, silence: 1.0, max_chunk: 10, pause_break: 2.0 },
     },
     notices: [],
   });
@@ -60,6 +62,8 @@ test("valid fields are read", () => {
     port: 9000,
     speech_filter: false,
     device: "1",
+    transcripts: null,
+    recording: settings.default_recording,
   });
 });
 
@@ -125,4 +129,112 @@ test("voice.json lives in the state directory", () => {
     if (saved === undefined) delete process.env.XDG_STATE_HOME;
     else process.env.XDG_STATE_HOME = saved;
   }
+});
+
+test("transcripts and recording are read", () => {
+  for (const transcripts of ["/srv/transcripts", "~/Notes/transcripts"]) {
+    const recording = { threshold: 30, silence: 0.8, max_chunk: 20, pause_break: 3 };
+    const { settings: s, notices } = settings.read(file("recording.json", JSON.stringify({ transcripts, recording })));
+    expect(notices).toEqual([]);
+    expect(s).toEqual({ ...settings.defaults(), transcripts, recording });
+  }
+  const { settings: s, notices } = settings.read(
+    file("recording_null.json", JSON.stringify({ recording: { threshold: null, silence: 1.5 } })),
+  );
+  expect(notices).toEqual([]);
+  expect(s.recording).toEqual({ ...settings.default_recording, threshold: null, silence: 1.5 });
+});
+
+test("a bad transcripts value falls back to the default with one notice", () => {
+  for (const transcripts of ["notes", "./notes", "~notes", "~", "", null, 3, ["/x"]]) {
+    const { settings: s, notices } = settings.read(file("transcripts.json", JSON.stringify({ transcripts })));
+    expect(s.transcripts).toBeNull();
+    expect(notices).toEqual([
+      'voice.json: "transcripts" must be an absolute folder or start with ~/; using the default',
+    ]);
+  }
+});
+
+test("each invalid recording field falls back on its own", () => {
+  const valid = { threshold: 30, silence: 0.8, max_chunk: 20, pause_break: 3 };
+  const cases: [Record<string, unknown>, string][] = [
+    [{ threshold: 101 }, 'voice.json: "recording.threshold" must be 0..100; using 20'],
+    [{ threshold: 12.5 }, 'voice.json: "recording.threshold" must be 0..100; using 20'],
+    [{ silence: 0.1 }, 'voice.json: "recording.silence" must be 0.5..10; using 1'],
+    [{ silence: "long" }, 'voice.json: "recording.silence" must be 0.5..10; using 1'],
+    [{ max_chunk: 4 }, 'voice.json: "recording.max_chunk" must be 5..30; using 10'],
+    [{ max_chunk: 31 }, 'voice.json: "recording.max_chunk" must be 5..30; using 10'],
+    [{ pause_break: 0.4 }, 'voice.json: "recording.pause_break" must be 0.5..30; using 2'],
+    [{ pause_break: 40 }, 'voice.json: "recording.pause_break" must be 0.5..30; using 2'],
+  ];
+  for (const [bad, notice] of cases) {
+    const [key] = Object.keys(bad) as (keyof settings.RecordingSettings)[];
+    const { settings: s, notices } = settings.read(
+      file("recording_bad.json", JSON.stringify({ silence: 3, recording: { ...valid, ...bad } })),
+    );
+    expect(notices).toEqual([notice]);
+    expect(s.recording).toEqual({ ...valid, [key]: settings.default_recording[key] });
+    // The dictation fields are untouched.
+    expect(s.silence).toBe(3);
+  }
+});
+
+test("a recording group that is not an object gives one notice and defaults", () => {
+  for (const recording of [null, 5, "fast", [1, 2]]) {
+    const { settings: s, notices } = settings.read(
+      file("recording_type.json", JSON.stringify({ threshold: 50, recording })),
+    );
+    expect(notices).toEqual(['voice.json: "recording" must be an object; using defaults']);
+    expect(s.recording).toEqual(settings.default_recording);
+    expect(s.threshold).toBe(50);
+  }
+});
+
+test("a pause break not longer than the recording silence is kept with a notice", () => {
+  const notice =
+    'voice.json: recording "pause_break" is not longer than "silence", so every passage starts a new contribution';
+  for (const recording of [
+    { silence: 2, pause_break: 2 },
+    { silence: 3, pause_break: 1 },
+    // The default pause break (2) against a longer silence.
+    { silence: 5 },
+  ]) {
+    const { settings: s, notices } = settings.read(file("pause_break.json", JSON.stringify({ recording })));
+    expect(notices).toEqual([notice]);
+    expect(s.recording).toEqual({ ...settings.default_recording, ...recording });
+  }
+  // The values in effect after validation are compared: a bad silence falls back to 1.
+  const { notices } = settings.read(
+    file("pause_break_bad.json", JSON.stringify({ recording: { silence: 0, pause_break: 1.5 } })),
+  );
+  expect(notices).toEqual(['voice.json: "recording.silence" must be 0.5..10; using 1']);
+  // The dictation silence does not count.
+  expect(settings.read(file("pause_break_dictation.json", JSON.stringify({ silence: 5 }))).notices).toEqual([]);
+});
+
+test("the transcripts flag overrides voice.json", () => {
+  const read = settings.read(file("flag.json", JSON.stringify({ transcripts: "/from/file" }))).settings;
+  expect(settings.merge(read, { transcripts: "notes" }).transcripts).toBe("notes");
+  expect(settings.merge(read, {}).transcripts).toBe("/from/file");
+});
+
+test("the transcript folder follows the precedence", () => {
+  const env = { HOME: "/home/me", XDG_DATA_HOME: "/data" },
+    cwd = "/work/here",
+    folder = (transcripts: string | null, e: NodeJS.ProcessEnv = env) =>
+      settings.transcriptsFolder({ ...settings.defaults(), transcripts }, e, cwd);
+  // The flag: relative resolves against the start directory.
+  expect(folder("notes")).toBe("/work/here/notes");
+  expect(folder("../notes")).toBe("/work/notes");
+  expect(folder("/abs/notes")).toBe("/abs/notes");
+  expect(folder("~/notes")).toBe("/home/me/notes");
+  // voice.json values are absolute or start with ~/.
+  const fromFile = settings.read(file("folder.json", JSON.stringify({ transcripts: "~/Notes/t" }))).settings;
+  expect(settings.transcriptsFolder(fromFile, env, cwd)).toBe("/home/me/Notes/t");
+  expect(settings.transcriptsFolder(settings.merge(fromFile, { transcripts: "x" }), env, cwd)).toBe("/work/here/x");
+  // The defaults.
+  expect(folder(null)).toBe("/data/corgi/transcripts");
+  expect(folder(null, { HOME: "/home/me", XDG_DATA_HOME: "" })).toBe("/home/me/.local/share/corgi/transcripts");
+  expect(folder(null, { HOME: "/home/me" })).toBe("/home/me/.local/share/corgi/transcripts");
+  expect(folder(null, {})).toBe(join(homedir(), ".local", "share", "corgi", "transcripts"));
 });
