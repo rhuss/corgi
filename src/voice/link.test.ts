@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalLink } from "./link";
+import * as websocket from "../wire_websocket";
 
 type Request = { op: string; [key: string]: any };
 /** Waits for `check`, polling, instead of a fixed sleep that load can outlast. */
@@ -11,40 +12,56 @@ async function until(check: () => boolean, ms = 2000) {
   while (!check() && Date.now() < end) await Bun.sleep(5);
   expect(check()).toBe(true);
 }
+/** A daemon socket stand-in: JSON lines over the WebSocket at `/rpc`, as the daemon serves them. */
+function serve<T>(
+  path: string,
+  open: () => T,
+  line: (request: Request, data: T, write: (value: object) => void) => void,
+) {
+  return Bun.serve<{ state: T; buffer: string }>({
+    unix: path,
+    fetch(req, server) {
+      const upgraded = server.upgrade(req, {
+        headers: { "Sec-WebSocket-Protocol": websocket.protocol },
+        data: { state: open(), buffer: "" },
+      });
+      return upgraded ? undefined : new Response(null, { status: 400 });
+    },
+    websocket: {
+      perMessageDeflate: false,
+      message(socket, chunk) {
+        socket.data.buffer += chunk.toString();
+        for (let end = socket.data.buffer.indexOf("\n"); end >= 0; end = socket.data.buffer.indexOf("\n")) {
+          const request = JSON.parse(socket.data.buffer.slice(0, end));
+          socket.data.buffer = socket.data.buffer.slice(end + 1);
+          line(request, socket.data.state, value => socket.send(Buffer.from(JSON.stringify(value) + "\n")));
+        }
+      },
+    },
+  });
+}
 /** A runtime stand-in that answers hello and the voice ops. */
 function stub(answer: (request: Request, push: (value: object) => void) => object | null = () => ({ ok: true })) {
   const dir = mkdtempSync(join(tmpdir(), "corgi-link-")),
     path = join(dir, "control.sock"),
     seen: { op: string; at: number; connection: number }[] = [];
   let connections = 0;
-  const server = Bun.listen<{ id: number; buffer: string }>({
-    unix: path,
-    socket: {
-      open(socket) {
-        socket.data = { id: ++connections, buffer: "" };
-      },
-      data(socket, chunk) {
-        socket.data.buffer += chunk.toString();
-        for (let end = socket.data.buffer.indexOf("\n"); end >= 0; end = socket.data.buffer.indexOf("\n")) {
-          const request = JSON.parse(socket.data.buffer.slice(0, end));
-          socket.data.buffer = socket.data.buffer.slice(end + 1);
-          seen.push({ op: request.op, at: performance.now(), connection: socket.data.id });
-          const push = (value: object) =>
-            socket.write(
-              JSON.stringify(request.request_id === undefined ? value : { ...value, request_id: request.request_id }) +
-                "\n",
-            );
-          const reply =
-            request.op === "hello"
-              ? { type: "hello", capabilities: ["voice.watch"] }
-              : request.op === "voice.watch"
-                ? { ok: true, voice_id: "v-1", muted: false, viewer: true, focus: null }
-                : answer(request, push);
-          if (reply) push(reply);
-        }
-      },
+  const server = serve(
+    path,
+    () => ++connections,
+    (request, id, write) => {
+      seen.push({ op: request.op, at: performance.now(), connection: id });
+      const push = (value: object) =>
+        write(request.request_id === undefined ? value : { ...value, request_id: request.request_id });
+      const reply =
+        request.op === "hello"
+          ? { type: "hello", capabilities: ["voice.watch"] }
+          : request.op === "voice.watch"
+            ? { ok: true, voice_id: "v-1", muted: false, viewer: true, focus: null }
+            : answer(request, push);
+      if (reply) push(reply);
     },
-  });
+  );
   cleanups.push(() => {
     server.stop(true);
     rmSync(dir, { recursive: true, force: true });
@@ -125,22 +142,11 @@ test("pushed mute changes and a lost presence reach the listeners", async () => 
 test("a daemon without the voice ops is refused", async () => {
   const dir = mkdtempSync(join(tmpdir(), "corgi-link-")),
     path = join(dir, "control.sock");
-  const server = Bun.listen<{ buffer: string }>({
-    unix: path,
-    socket: {
-      open(socket) {
-        socket.data = { buffer: "" };
-      },
-      data(socket, chunk) {
-        socket.data.buffer += chunk.toString();
-        for (let end = socket.data.buffer.indexOf("\n"); end >= 0; end = socket.data.buffer.indexOf("\n")) {
-          const request = JSON.parse(socket.data.buffer.slice(0, end));
-          socket.data.buffer = socket.data.buffer.slice(end + 1);
-          socket.write(JSON.stringify({ type: "hello", capabilities: [], request_id: request.request_id }) + "\n");
-        }
-      },
-    },
-  });
+  const server = serve(
+    path,
+    () => null,
+    (request, _, write) => write({ type: "hello", capabilities: [], request_id: request.request_id }),
+  );
   try {
     await expect(LocalLink.connect(path)).rejects.toThrow("DaemonLacksVoice");
     await expect(LocalLink.connect(join(dir, "missing.sock"))).rejects.toThrow("NoRuntime");

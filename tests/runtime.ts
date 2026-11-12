@@ -54,7 +54,8 @@ export function screen_text(data: string, cols = 80, rows = 24): string[] {
       continue;
     }
     if (data[i] === "\x1b") {
-      const match = /^\x1b\[([0-9;:?]*)([@-~])/.exec(data.slice(i));
+      // Intermediate bytes, as in a cursor shape (`ESC [ 0 SP q`), change nothing on screen.
+      const match = /^\x1b\[([0-9;:?]*)[ -/]*([@-~])/.exec(data.slice(i));
       if (!match) throw new Error(`Unexpected frame escape ${JSON.stringify(data.slice(i, i + 50))}`);
       const [, args, kind] = match;
       if (kind === "H" || kind === "f") {
