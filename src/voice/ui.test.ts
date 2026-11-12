@@ -1327,7 +1327,7 @@ test("the meter and Options show the recording's values while it runs", () => {
     tuning = new Tuning(target, {
       dictation: { threshold: 44, silence: 2.5 },
       recording: { threshold: 60, silence: 1, max_chunk: 10, pause_break: 2 },
-      shared: { burst: 0.1, pre_roll: 0.3, min_speech: 0.2 },
+      shared: { burst: 0.1, pre_roll: 0.3, post_roll: 1, min_speech: 0.2 },
     }),
     { ui } = recording({ tuning, setThreshold: pct => tuning.setThreshold(pct) }, tuning);
   let rows = screen(ui.draw(80, 20), 80, 20);
@@ -1388,7 +1388,7 @@ test("+ right after Enter steps from the recording's threshold, with no frame be
     tuning = new Tuning(target, {
       dictation: { threshold: 44, silence: 2.5 },
       recording: { threshold: 60, silence: 1, max_chunk: 10, pause_break: 2 },
-      shared: { burst: 0.1, pre_roll: 0.3, min_speech: 0.2 },
+      shared: { burst: 0.1, pre_roll: 0.3, post_roll: 1, min_speech: 0.2 },
     }),
     { ui } = recording({ tuning, setThreshold: pct => tuning.setThreshold(pct) }, tuning);
   ui.draw(80, 20);

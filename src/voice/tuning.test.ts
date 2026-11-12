@@ -31,7 +31,7 @@ function make(recording: Partial<RecordingSettings> = {}) {
   const tuning = new Tuning(seg, {
     dictation: { threshold: 44, silence: 2.5 },
     recording: { threshold: null, silence: 1, max_chunk: 10, pause_break: 2, ...recording },
-    shared: { burst: 0.1, pre_roll: 0.3, min_speech: 0.2 },
+    shared: { burst: 0.1, pre_roll: 0.3, post_roll: 1, min_speech: 0.2 },
   });
   return { seg, tuning };
 }
@@ -41,7 +41,7 @@ test("the constructor applies nothing; the dictation values are in effect", () =
   expect(seg.calls).toEqual([]);
   expect(tuning.active).toBe("dictation");
   expect(tuning.threshold).toBe(44);
-  expect(tuning.timing).toEqual({ silence: 2.5, burst: 0.1, pre_roll: 0.3, min_speech: 0.2 });
+  expect(tuning.timing).toEqual({ silence: 2.5, burst: 0.1, pre_roll: 0.3, post_roll: 1, min_speech: 0.2 });
   expect(tuning.pause_break).toBe(2);
 });
 
@@ -127,11 +127,11 @@ test("burst, pre-roll and minimum speech are shared and not undone by end", () =
   tuning.end();
   // end touches only threshold, silence and cap.
   expect(seg.calls.slice(6)).toEqual(["threshold 44", "silence 2.5", "cap 30"]);
-  expect(tuning.timing).toEqual({ silence: 2.5, burst: 0.2, pre_roll: 0.5, min_speech: 0.4 });
+  expect(tuning.timing).toEqual({ silence: 2.5, burst: 0.2, pre_roll: 0.5, post_roll: 1, min_speech: 0.4 });
   // Set during dictation, they hold in the next recording too.
   tuning.setTiming("burst", 0.05);
   tuning.begin();
-  expect(tuning.timing).toEqual({ silence: 1, burst: 0.05, pre_roll: 0.5, min_speech: 0.4 });
+  expect(tuning.timing).toEqual({ silence: 1, burst: 0.05, pre_roll: 0.5, post_roll: 1, min_speech: 0.4 });
 });
 
 test("the settings object passed in is not changed", () => {
@@ -139,7 +139,7 @@ test("the settings object passed in is not changed", () => {
   const tuning = new Tuning(target(), {
     dictation: { threshold: 44, silence: 2.5 },
     recording,
-    shared: { burst: 0.1, pre_roll: 0.3, min_speech: 0.2 },
+    shared: { burst: 0.1, pre_roll: 0.3, post_roll: 1, min_speech: 0.2 },
   });
   tuning.begin();
   tuning.setThreshold(60);
@@ -151,7 +151,7 @@ test("a silence changed while recording to pause_break or more says so", () => {
   const tuning = new Tuning(target(), {
     dictation: { threshold: 44, silence: 2.5 },
     recording: { threshold: null, silence: 1, max_chunk: 10, pause_break: 2 },
-    shared: { burst: 0.1, pre_roll: 0.3, min_speech: 0.2 },
+    shared: { burst: 0.1, pre_roll: 0.3, post_roll: 1, min_speech: 0.2 },
     warn: text => warnings.push(text),
   });
   // Dictation's silence has nothing to do with contributions.

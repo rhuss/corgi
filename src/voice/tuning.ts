@@ -9,7 +9,7 @@ import type { RecordingSettings } from "./settings";
 const dictation_cap = 30;
 
 type Target = Pick<Segmenter, "setThreshold" | "setTiming" | "setCap">;
-type Shared = { burst: number; pre_roll: number; min_speech: number };
+type Shared = { burst: number; pre_roll: number; post_roll: number; min_speech: number };
 
 export class Tuning {
   private readonly target: Target;
