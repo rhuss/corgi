@@ -1,11 +1,11 @@
 //! How voice mode reaches a runtime. The watch connection holds the presence
 //! and hears mute changes; every other request gets a connection of its own
 //! and 2 s to finish, so one stuck delivery never holds up the next.
-import { createConnection, type Socket } from "node:net";
 import * as json from "../json";
 import * as errors from "../errors";
 import * as protocol from "../protocol";
 import * as rpc from "../rpc";
+import * as websocket_socket from "../websocket_socket";
 
 export type WatchRequest = { pane?: number; muted: boolean; available: boolean };
 /** Whether the runtime has a viewer, and the title of the pane text would go to. */
@@ -126,7 +126,7 @@ function connectionError(error: unknown): Error {
 
 export class LocalLink implements VoiceLink {
   private events = new Events();
-  private socket: Socket | null = null;
+  private socket: websocket_socket.Socket | null = null;
   private heartbeat?: ReturnType<typeof setInterval>;
   private voice_id = "";
   private replies: ((reply: Message) => void)[] = [];
@@ -143,7 +143,8 @@ export class LocalLink implements VoiceLink {
     return new LocalLink(path, { deadline_ms, heartbeat_ms: 1000, ...opts });
   }
   watch(req: WatchRequest): Promise<Watched> {
-    const socket = createConnection(this.path);
+    // The daemon's WebSocket carries the same JSON lines a bare socket once did.
+    const socket = new websocket_socket.Socket(this.path);
     this.socket = socket;
     let buffer = "";
     socket.setEncoding("utf8");
