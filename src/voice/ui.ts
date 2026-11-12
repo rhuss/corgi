@@ -5,14 +5,20 @@ import { Style } from "../palette";
 import * as level from "./level";
 import * as gauge from "./gauge";
 import * as corgiAnimation from "../corgi_animation";
+import * as transcript from "./transcript";
 import { keys, incomplete, type Key } from "../terminal_keys";
-import { displayWidth, ellipsis } from "../text";
+import { displayWidth, ellipsis, Writer } from "../text";
+import * as nameDialog from "../name_dialog";
+import * as folderDialog from "../new_workspace";
 import { thumb } from "../scroll_thumb";
 import { Differ } from "../frame_diff";
 import { closeReadiness } from "../pane/terminal";
 import type { VoiceSession, Utterance, GaugeRow } from "./session";
 import type { Device, MicProblem } from "./capture";
 import type { Timing } from "./segmenter";
+import type { Recorder } from "./recorder";
+import type { Tuning } from "./tuning";
+import { Reading, clock, wrap } from "./reading";
 
 const reset = "\x1b[0m",
   meter_cells = 20,
@@ -74,7 +80,7 @@ const filter_labels: Record<FilterState | "switching…", string> = {
 const help_entries: [string, string][] = [
   [
     "threshold",
-    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel. Raise it in a noisy room; lower it when quiet words are missed.",
+    "How loud a sound must be to count as speech: the bar on the meter, changed with + and - or the mouse wheel (in the reading view, only above the line under the options; below it, it scrolls). Raise it in a noisy room; lower it when quiet words are missed. Changed during a recording, it lasts until the recording stops; every recording starts from the standard value.",
   ],
   [
     "gauge",
@@ -82,7 +88,7 @@ const help_entries: [string, string][] = [
   ],
   [
     "silence",
-    "How long a pause ends an utterance and sends it to Whisper. Shorter types sooner but can split a sentence; longer waits through pauses for thought. The grey line under the meter shows the pause running.",
+    "How long a pause ends an utterance and sends it to Whisper. Shorter types sooner but can split a sentence; longer waits through pauses for thought. The grey line under the meter shows the pause running. A recording has its own, shorter silence: changed during a recording, it is that one, and stopping brings back the dictation silence.",
   ],
   [
     "burst",
@@ -102,22 +108,14 @@ const help_entries: [string, string][] = [
     "How much loud audio an utterance needs; anything shorter, such as a cough or a door, is dropped before Whisper.",
   ],
   [
+    "record",
+    "r writes what is said to a transcript file, after asking for its name and folder; r again pauses and resumes, and R stops. A recording mutes dictation while it runs, and stopping puts the mute back as it was; press m to dictate too. v shows it as a conversation, one block per speaker turn.",
+  ],
+  [
     "",
-    "Click an option to change it. Changes last for this session; voice.json holds the defaults. An utterance is cut at 30 s, as Whisper hears 30 s at a time.",
+    "Click an option to change it. Changes last for this session; voice.json holds the defaults. An utterance is cut at 30 s, as Whisper hears 30 s at a time; while recording, at max_chunk (10 s unless voice.json sets it).",
   ],
 ];
-/** `text` in lines of at most `width` cells, broken between words. */
-function wrap(text: string, width: number): string[] {
-  const out: string[] = [];
-  let line = "";
-  for (const word of text.split(" ")) {
-    if (line && displayWidth(line) + 1 + displayWidth(word) > width) {
-      out.push(line);
-      line = word;
-    } else line = line ? `${line} ${word}` : word;
-  }
-  return line ? [...out, line] : out;
-}
 let plain = "",
   strong = "",
   text = "",
@@ -197,9 +195,42 @@ export type Options = {
   setThreshold: (pct: number) => void;
   listDevices: () => Promise<{ devices: Device[]; notice?: string }>;
   switchDevice: (device: Device) => void;
+  /** Ends voice mode; with a recording, the first call waits for its transcript. */
   quit: () => void;
   /** The clock a gauged threshold's glide runs on, in ms; `Date.now` by default. */
   now?: () => number;
+  /** Transcript recording, when voice mode offers it. */
+  recorder?: Recorder;
+  /** The values in effect, read for drawing instead of `threshold` and `timing`. */
+  tuning?: Tuning;
+  /** The folder the transcript dialog starts in. */
+  folder?: string;
+  /** The file a typed transcript name in `folder` stands for, or why it is refused. */
+  resolveName?: (name: string, folder: string) => { path: string } | { error: string };
+  /** Starts recording into a resolved file. */
+  startRecording?: (path: string) => { path: string } | { error: string };
+  stopRecording?: () => void;
+};
+/** The transcript dialog: the New workspace dialog's file name and folder
+ * browser. `view` is the last frame's, which clicks land on; `noted` the name
+ * and folder the dialog's note was worked out for, once per change, not on
+ * every frame. */
+type Prompt = {
+  dialog: folderDialog.Dialog;
+  view: nameDialog.View | null;
+  noted: string | null;
+};
+/** The escape sequences the dialog reads, for the keys the voice window parses. */
+const sequences: Partial<Record<Key["kind"], string>> = {
+  up: "\x1b[A",
+  down: "\x1b[B",
+  right: "\x1b[C",
+  left: "\x1b[D",
+  backtab: "\x1b[Z",
+  pageup: "\x1b[5~",
+  pagedown: "\x1b[6~",
+  home: "\x1b[H",
+  end: "\x1b[F",
 };
 type Picker = { devices: Device[]; choice: number; loading: boolean; notice?: string };
 /** A timing's dropdown, opened by a click on it, below its value at `y`, `x`. */
@@ -273,11 +304,6 @@ export function mode(s: VoiceSession): {
   if (s.transcribing) return { note: "♫", style: transcribing_note, ...on };
   return { note: "♫", style: listening_note, ...on };
 }
-/** A local wall-clock time, as 14:02:31. */
-export function clock(ms: number): string {
-  const d = new Date(ms);
-  return [d.getHours(), d.getMinutes(), d.getSeconds()].map(n => String(n).padStart(2, "0")).join(":");
-}
 /** How long the text took once speech ended: transcription plus delivery. */
 function latency(u: Utterance): string | null {
   const { transcribe_ms, deliver_ms } = u.timings;
@@ -307,6 +333,18 @@ function describe(u: Utterance): { glyph: string; style: string; label: string }
       return { glyph: "✗", style: warm, label: `${said ? said + " · " : ""}failed: ${u.reason}` };
     case "discarded":
       return { glyph: "○", style: quiet, label: `discarded (${u.reason})` };
+    case "recorded":
+      // Written; typed or not, unless the typing got no answer and may have
+      // been. Muted is what a recording does by itself, so the mark says
+      // enough; anything else not typed gets its reason.
+      return {
+        glyph: "●",
+        style: muted,
+        label:
+          !u.maybe_typed && u.reason === "muted"
+            ? said
+            : `${said} · ${u.maybe_typed ? "recorded" : "recorded, not typed"} (${u.reason})`,
+      };
     // Muting drops what was said on purpose; it needs no row.
     case "muted":
     case "dropped":
@@ -333,17 +371,40 @@ export function gaugeRow(g: GaugeRow): Row {
     })();
   return { glyph: "┃", style, label, time: clock(g.at), latency: null };
 }
-/** The utterances' rows with the gauges' among them, by time. */
-function historyRows(history: readonly Utterance[], gauges: readonly GaugeRow[]): Row[] {
-  const out: Row[] = [];
-  let g = 0;
-  for (const u of history) {
-    for (; g < gauges.length && gauges[g].at < u.captured_at; g++) out.push(gaugeRow(gauges[g]));
-    const r = row(u);
-    if (r) out.push(r);
+type Timed = { at: number; row: Row };
+/** `a` in its own order, with `b` among it by time: one of `b` goes before
+ * the first of `a` that is later, and after those at the same time. */
+function interleave(a: Timed[], b: Timed[]): Timed[] {
+  const out: Timed[] = [];
+  let j = 0;
+  for (const x of a) {
+    for (; j < b.length && b[j].at < x.at; j++) out.push(b[j]);
+    out.push(x);
   }
-  for (; g < gauges.length; g++) out.push(gaugeRow(gauges[g]));
-  return out;
+  return out.concat(b.slice(j));
+}
+/** The history: what was said, the gauges and the recording's notices, in time order. */
+function historyRows(
+  history: readonly Utterance[],
+  gauges: readonly GaugeRow[],
+  recorder: Recorder | undefined,
+): Row[] {
+  const said = history.flatMap(u => {
+      const r = row(u);
+      return r ? [{ at: u.captured_at, row: r }] : [];
+    }),
+    gauged = gauges.map(g => ({ at: g.at, row: gaugeRow(g) })),
+    notes = (recorder?.notices ?? []).map(n => ({
+      at: n.at,
+      row: {
+        glyph: n.kind === "error" ? "✗" : "○",
+        style: n.kind === "error" ? warm : quiet,
+        label: n.text,
+        time: clock(n.at),
+        latency: null,
+      },
+    }));
+  return interleave(interleave(said, gauged), notes).map(r => r.row);
 }
 /** A rounded box, blank inside, with `title` in its top edge. */
 function box(
@@ -379,6 +440,22 @@ export class VoiceUi {
   menu: Menu | null = null;
   /** The help overlay, and how far it is scrolled when it does not fit. */
   help: { scroll: number } | null = null;
+  prompt: Prompt | null = null;
+  /** The folder the last recording went into, where the dialog opens next. */
+  private folder: string | null = null;
+  /** Quitting waits for the transcript to be finished. */
+  finishing = false;
+  /** The reading view, while open: the first line it shows, or null while it
+   * follows the newest, and how many blocks there were when it stopped following. */
+  reading: { top: number | null; seen: number } | null = null;
+  /** The answer to the last key, until the next one. */
+  private flash: string | null = null;
+  private reader = new Reading();
+  /** The reading view's last frame, which its scroll keys and its scroll bar
+   * move through: its lines, the rows it had from row `top`, and the bar's column. */
+  private reading_area = { lines: 0, height: 1, top: 0, bar_x: 0 };
+  /** While the scroll bar is dragged, the row of its thumb the pointer holds. */
+  private grab: number | null = null;
   device: string;
   /** The microphone recording: null for the system default, else the ID or
    * name it was started with (`--device 1` or `--device "USB Mic"`). */
@@ -402,12 +479,15 @@ export class VoiceUi {
     this.gauges_seen = session.gauges.length;
     this.now = opts.now ?? Date.now;
   }
-  /** A gauged threshold applies at once; the marker glides there. */
+  /** A gauged threshold applies at once; the marker glides there. The session
+   * set it on the segmenter; the tuning takes it too, so it is the one in
+   * effect for the active set, as + and - would leave it. */
   private sync(): void {
     const gauges = this.session.gauges;
     for (const g of gauges.slice(this.gauges_seen))
       if (g.outcome !== "too_loud" && g.outcome !== "mic_failed") {
         this.threshold = g.threshold;
+        this.opts.tuning?.setThreshold(g.threshold);
         this.glide = { from: g.old, to: g.threshold, started: this.now() };
       }
     this.gauges_seen = gauges.length;
@@ -430,8 +510,14 @@ export class VoiceUi {
   /** The frame for a `cols` × `rows` screen, from a clear one. */
   draw(cols: number, rows: number): string {
     const at = (y: number, x: number) => `\x1b[${y + 1};${x + 1}H`,
-      s = this.session;
+      s = this.session,
+      tuning = this.opts.tuning,
+      recording = this.opts.recorder?.current?.state ?? null;
     this.sync();
+    if (tuning) {
+      this.threshold = tuning.threshold;
+      this.timing = { ...tuning.timing };
+    }
     let frame = "";
     for (let y = 0; y < rows; y++) frame += at(y, 0) + plain + " ".repeat(cols);
     const put = (y: number, x: number, style: string, value: string, room = cols - x) => {
@@ -465,6 +551,9 @@ export class VoiceUi {
       cell(2, "Model:", this.opts.model, strong, second, right);
       const shown = cell(3, "Mode:", state.label, state.label_style, second, right);
       this.hits.push({ y: 3, x: second + label_width, width: shown, act: mute, mute: true });
+      const after = second + label_width + shown;
+      if (recording === "running") put(3, after, hotBold, "  ● REC");
+      else if (recording === "paused") put(3, after, warm, "  ⏸ paused");
     }
     // The level in braille dots, a quarter cell at a time, dimmed while it is
     // under the threshold, which is a solid warm bar. Grey while muted. While
@@ -529,56 +618,213 @@ export class VoiceUi {
     }
     frame += at(history_top - 1, 0) + line + "─".repeat(cols) + reset;
     // What stands in the way, if anything, and the notices; then the history, newest at the bottom.
-    const status =
-        problem(s) ??
-        linkStatus(s, this.opts.target) ??
-        (s.viewer ? null : "No Corgi window is attached; nothing is recorded until one is"),
+    const status = this.status(),
       notices: [string, string][] = [
-        ...(status ? [[s.available && s.link_state !== "refused" ? muted : warm, status] as [string, string]] : []),
+        ...(status ? [status] : []),
         ...this.opts.notices.slice(0, 3).map(n => [warm, n] as [string, string]),
       ];
     notices.forEach(([style, n], i) => put(history_top + i, 1, style, n, cols - 3));
     const top = history_top + notices.length,
       height = Math.max(0, rows - 2 - top),
-      shown = historyRows(s.history, s.gauges);
-    this.scroll = Math.max(0, Math.min(this.scroll, shown.length - height));
-    const last = shown.length - this.scroll,
-      first = Math.max(0, last - height);
-    if (!shown.length) put(top, 1, quiet, "Say something; what is heard shows here.");
-    shown.slice(first, last).forEach((r, i) => {
-      put(top + i, 1, r.style, r.glyph);
-      let x = 3 + put(top + i, 3, quiet, r.time + " ");
-      if (r.latency) x += put(top + i, x, quiet, `(${r.latency}) `);
-      put(top + i, x, r.style, r.label, cols - 2 - x);
-    });
-    const bar = thumb(height, shown.length, first);
-    if (bar) for (let i = 0; i < bar.len; i++) frame += at(top + bar.start + i, cols - 1) + muted + "┃" + reset;
+      contributions = this.opts.recorder?.current?.turns.contributions;
+    // The reading view goes with the recording.
+    if (!contributions) this.reading = null;
+    if (this.reading && contributions) {
+      // Each block behind its gutter bar, newest at the bottom.
+      const r = this.reading,
+        lines = this.reader.lines(contributions, cols - 2),
+        max = Math.max(0, lines.length - height);
+      if (r.top !== null && r.top >= max) r.top = null;
+      const first = r.top ?? max;
+      this.reading_area = { lines: lines.length, height, top, bar_x: cols - 1 };
+      if (!lines.length) put(top, 1, quiet, "Nothing is written yet; what is recorded shows here.");
+      lines.slice(first, first + height).forEach((l, i) => {
+        if (!l.bar) return;
+        put(top + i, 1, l.bar === "warm" ? warm : accent, "▌");
+        put(top + i, 3, l.kind === "time" ? muted : text, l.text, cols - 4);
+      });
+      const bar = thumb(height, lines.length, first);
+      if (bar) for (let i = 0; i < bar.len; i++) frame += at(top + bar.start + i, cols - 1) + muted + "┃" + reset;
+    } else {
+      const shown = historyRows(s.history, s.gauges, this.opts.recorder);
+      this.scroll = Math.max(0, Math.min(this.scroll, shown.length - height));
+      const last = shown.length - this.scroll,
+        first = Math.max(0, last - height);
+      if (!shown.length) put(top, 1, quiet, "Say something; what is heard shows here.");
+      shown.slice(first, last).forEach((r, i) => {
+        put(top + i, 1, r.style, r.glyph);
+        let x = 3 + put(top + i, 3, quiet, r.time + " ");
+        if (r.latency) x += put(top + i, x, quiet, `(${r.latency}) `);
+        put(top + i, x, r.style, r.label, cols - 2 - x);
+      });
+      // No scroll bar: the history is a log, scrolled with the keys.
+    }
     // The keys, most needed first; those that do not fit are left out whole.
     // Padded to "unmute", so the keys after it never shift.
     const mute_key: [string, string] = ["m", (s.muted ? "unmute" : "mute").padEnd(6)];
     frame += at(rows - 1, 1);
     let room = cols - 2;
+    // Scrolled up in the reading view: the blocks that came meanwhile.
+    const below =
+      this.reading?.top != null && contributions ? `${contributions.length - this.reading.seen} new below · G` : null;
     for (const [key, what] of g
       ? [mute_key, ["esc", "cancel"], ["?", "help"]]
       : [
           mute_key,
           ["q", "quit"],
+          ...(this.opts.recorder && (recording || this.canStart)
+            ? [["r", recording === "running" ? "pause " : recording === "paused" ? "resume" : "record"]]
+            : []),
+          ...(recording ? [["R", "stop"]] : []),
+          ...(recording ? [["v", this.reading ? "back" : "read"]] : []),
+          ...(below ? [["", below]] : []),
           ["?", "help"],
           ["+ -", "threshold"],
           ["t", "gauge"],
           ["f", "filter"],
           ["d", "device"],
-          ["j k", "history"],
+          ["j k", this.reading ? "scroll" : "history"],
         ]) {
-      const width = key.length + what.length + 5;
+      const width = key ? key.length + what.length + 5 : displayWidth(what) + 2;
       if (width > room) break;
       room -= width;
-      frame += `${palette.keycap} ${key} ${reset}${quiet} ${what}  ${reset}`;
+      frame += key ? `${palette.keycap} ${key} ${reset}${quiet} ${what}  ${reset}` : `${accent}${what}  ${reset}`;
     }
     if (this.picker) frame += this.drawPicker(cols, rows, at);
     if (this.menu) frame += this.drawMenu(cols, rows, at);
     if (this.help) frame += this.drawHelp(cols, rows, at);
+    if (this.prompt) frame += this.drawPrompt(cols, rows);
     return frame;
+  }
+  /** The status line: what stands in the way, if anything, and its style. */
+  private status(): [string, string] | null {
+    const s = this.session,
+      error = this.opts.recorder?.current ? null : this.opts.recorder?.error;
+    if (this.finishing) return [warm, "Finishing transcript…"];
+    if (this.flash) return [muted, this.flash];
+    const blocked = problem(s) ?? linkStatus(s, this.opts.target);
+    if (blocked) return [s.available && s.link_state !== "refused" ? muted : warm, blocked];
+    if (error) return [warm, `Cannot write the transcript: ${error}`];
+    if (!s.viewer) return [muted, "No Corgi window is attached; nothing is typed until one is"];
+    return null;
+  }
+  /** The file the dialog's name and folder stand for. */
+  private resolveName(d: folderDialog.Dialog): { path: string } | { error: string } {
+    return this.opts.resolveName?.(d.name(), d.browser.folder()) ?? { error: "recording is not available" };
+  }
+  /** The dialog as the New workspace dialog draws it, with a caret of its own
+   * in the field that has the keys: this screen keeps the terminal's hidden. */
+  private drawPrompt(cols: number, rows: number): string {
+    const p = this.prompt!,
+      d = p.dialog,
+      key = `${d.name()}\0${d.browser.folder()}`;
+    if (p.noted !== key) {
+      const where = this.resolveName(d);
+      d.note =
+        "error" in where
+          ? { text: where.error, warn: true }
+          : transcript.exists(where.path)
+            ? { text: `appends to the existing file: ${where.path}`, warn: true }
+            : { text: where.path, warn: false };
+      p.noted = key;
+    }
+    d.fit(cols, rows);
+    const v = nameDialog.View.init(cols, rows, d),
+      w = new Writer(),
+      field_style = new Style({ fg: "text", bg: "selected" }).sgr();
+    v.draw(d, w, 0);
+    const [field, offset, y] =
+      v instanceof folderDialog.View && d.browser.focused
+        ? [d.browser.field, v.folders.offset, v.folders.field_y]
+        : [d as nameDialog.Dialog, v.offset, v.field_y];
+    w.write(`\x1b[${y + 1};${v.text_x + 1}H`);
+    nameDialog.writeField(w, field, offset, v.text_width, field_style, { caret: true });
+    p.view = v;
+    return w.buffered() + reset;
+  }
+  private promptKey(key: Key): void {
+    const p = this.prompt!,
+      d = p.dialog;
+    let result: nameDialog.Result = "none";
+    switch (key.kind) {
+      // Quitting cancels the dialog; no file is made.
+      case "cancel":
+        this.prompt = null;
+        return this.opts.quit();
+      case "esc":
+        result = d.key(27);
+        break;
+      case "enter":
+        result = d.key(13);
+        break;
+      case "tab":
+        result = d.key(9);
+        break;
+      case "backspace":
+        result = d.key(127);
+        break;
+      case "ctrl":
+        result = d.key(key.key.charCodeAt(0) - 96);
+        break;
+      case "text": {
+        // Keys arrive as latin1 bytes; the dialog puts UTF-8 back together.
+        const bytes = Buffer.from(key.text, "latin1");
+        if (bytes.length === 1) result = d.key(bytes[0]);
+        else for (const b of bytes) d.pasteByte(b);
+        break;
+      }
+      case "click":
+        if (p.view) result = d.press(p.view, key.x, key.y, Date.now());
+        break;
+      case "wheel":
+        if (d.browser.focused) d.browser.move(key.dir > 0 ? -1 : 1);
+        break;
+      default: {
+        const seq = sequences[key.kind];
+        if (seq) d.sequence(seq);
+      }
+    }
+    if (result === "cancel") this.prompt = null;
+    else if (result === "save") this.submit();
+  }
+  /** Enter: records into the file the dialog names, unless it is refused,
+   * which its note says. */
+  private submit(): void {
+    const d = this.prompt!.dialog,
+      where = this.resolveName(d);
+    if ("error" in where) return;
+    this.prompt = null;
+    this.folder = d.browser.folder();
+    // An open error shows in the status line and the history.
+    this.opts.startRecording?.(where.path);
+  }
+  /** r: the transcript dialog without a recording, else pause or resume. */
+  private record(): void {
+    const recorder = this.opts.recorder;
+    // Quitting is finishing the transcript; nothing new starts.
+    if (!recorder || this.finishing) return;
+    switch (recorder.current?.state) {
+      case "running":
+        return recorder.pause();
+      case "paused":
+        return recorder.resume();
+      default: {
+        if (!this.canStart) return;
+        const browser = folderDialog.Browser.init(this.folder ?? this.opts.folder ?? process.cwd());
+        // Folders made here are the user's alone, as the transcript's own are.
+        browser.folder_mode = 0o700;
+        const { name, caret } = transcript.defaultName(new Date());
+        this.prompt = {
+          dialog: folderDialog.Dialog.named(browser, { transcript: null }, name, caret),
+          view: null,
+          noted: null,
+        };
+      }
+    }
+  }
+  /** A new recording needs a name resolved and a way to start it. */
+  private get canStart(): boolean {
+    return !!(this.opts.resolveName && this.opts.startRecording);
   }
   private drawHelp(cols: number, rows: number, at: (y: number, x: number) => string): string {
     const width = Math.min(cols - 4, 78),
@@ -702,10 +948,15 @@ export class VoiceUi {
   }
   key(key: Key, rows = 24): void {
     this.sync();
+    this.flash = null;
+    if (this.prompt) return this.promptKey(key);
     if (this.picker) return this.pickerKey(key);
     if (this.menu) return this.menuKey(key);
     if (this.help) return this.helpKey(key);
+    // Letting go ends a drag of the reading view's scroll bar, wherever it happens.
+    if (key.kind === "release") return void (this.grab = null);
     if (this.session.gauge) return this.gaugeKey(key);
+    if (this.reading && this.readingKey(key)) return;
     const page = Math.max(1, rows - history_top - 3),
       back = (n: number) => void (this.scroll = Math.max(0, this.scroll + n));
     switch (key.kind) {
@@ -728,6 +979,7 @@ export class VoiceUi {
         return;
       case "click":
         return this.hits.find(h => key.y === h.y && key.x >= h.x && key.x < h.x + h.width)?.act();
+      // Outside the reading view the wheel moves the threshold anywhere in the window.
       case "wheel":
         return this.nudge(key.dir);
       case "text":
@@ -760,6 +1012,14 @@ export class VoiceUi {
             return void this.switchFilter();
           case "?":
             return void (this.help = { scroll: 0 });
+          case "r":
+            return this.record();
+          case "R":
+            return this.opts.stopRecording?.();
+          case "v":
+            if (this.opts.recorder?.current) this.reading = { top: null, seen: 0 };
+            else if (this.opts.recorder) this.flash = "The reading view needs a recording: press r";
+            return;
         }
     }
   }
@@ -773,6 +1033,101 @@ export class VoiceUi {
     else if (key.kind === "click")
       this.hits.find(h => h.mute && key.y === h.y && key.x >= h.x && key.x < h.x + h.width)?.act();
   }
+  /** The reading view's own keys: closing it and scrolling, as in the
+   * history. False for the keys it shares with the voice window. */
+  private readingKey(key: Key): boolean {
+    const r = this.reading!,
+      { lines, height } = this.reading_area,
+      page = Math.max(1, height),
+      half = Math.ceil(page / 2),
+      move = (n: number) => {
+        const max = Math.max(0, lines - height);
+        if (r.top === null) r.seen = this.opts.recorder?.current?.turns.contributions.length ?? 0;
+        const to = Math.max(0, (r.top ?? max) + n);
+        r.top = to >= max ? null : to;
+        return true;
+      };
+    switch (key.kind) {
+      case "esc":
+        this.reading = null;
+        return true;
+      case "up":
+        return move(-1);
+      case "down":
+        return move(1);
+      case "pageup":
+        return move(-page);
+      case "pagedown":
+        return move(page);
+      case "home":
+        return move(-lines);
+      case "end":
+        r.top = null;
+        return true;
+      // Below the line under the options the wheel scrolls the conversation,
+      // three lines a notch; above it, it moves the threshold, as + and - do.
+      case "wheel":
+        return key.y >= history_top - 1 && move(key.dir > 0 ? -3 : 3);
+      case "click":
+        return this.pressBar(key.x, key.y);
+      case "drag":
+        if (this.grab === null) return false;
+        this.dragBar(key.y);
+        return true;
+      case "ctrl": {
+        const n = { u: -half, d: half, b: -page, f: page }[key.key];
+        if (n === undefined) return false;
+        return move(n);
+      }
+      case "text":
+        switch (key.text) {
+          case "v":
+            this.reading = null;
+            return true;
+          case "k":
+            return move(-1);
+          case "j":
+            return move(1);
+          case "g":
+            return move(-lines);
+          case "G":
+            r.top = null;
+            return true;
+        }
+    }
+    return false;
+  }
+  /** A press on the reading view's scroll bar: on the thumb it takes hold of
+   * it; elsewhere on the bar the thumb jumps there, held by its middle.
+   * False for a press anywhere else. */
+  private pressBar(x: number, y: number): boolean {
+    const { lines, height, top, bar_x } = this.reading_area,
+      max = Math.max(0, lines - height),
+      bar = thumb(height, lines, this.reading!.top ?? max);
+    // The column beside the bar counts too: it is one cell wide.
+    if (!bar || x < bar_x - 1 || y < top || y >= top + height) return false;
+    const on = y - top - bar.start;
+    if (on >= 0 && on < bar.len) this.grab = on;
+    else {
+      this.grab = Math.floor(bar.len / 2);
+      this.dragBar(y);
+    }
+    return true;
+  }
+  /** Moves the held thumb so its grabbed row is at `y`, and the view with it. */
+  private dragBar(y: number): void {
+    const r = this.reading!,
+      { lines, height, top } = this.reading_area,
+      max = Math.max(0, lines - height),
+      bar = thumb(height, lines, r.top ?? max);
+    if (!bar || this.grab === null) return;
+    const room = height - bar.len,
+      start = Math.max(0, Math.min(room, y - top - this.grab)),
+      first = room > 0 ? Math.round((start * max) / room) : 0;
+    // Leaving the bottom stops following, as scrolling up does.
+    if (r.top === null) r.seen = this.opts.recorder?.current?.turns.contributions.length ?? 0;
+    r.top = first >= max ? null : first;
+  }
   private async switchFilter(): Promise<void> {
     if (this.filter === "switching…" || this.filter === "not installed") return;
     this.filter = "switching…";
@@ -780,7 +1135,8 @@ export class VoiceUi {
   }
   private nudge(dir: 1 | -1): void {
     this.glide = null;
-    this.threshold = level.step(this.threshold, dir);
+    // The value in effect now: a recording may have started or stopped since the last frame.
+    this.threshold = level.step(this.opts.tuning?.threshold ?? this.threshold, dir);
     this.opts.setThreshold(this.threshold);
   }
   private openPicker(): void {
@@ -815,8 +1171,8 @@ export class VoiceUi {
   }
 }
 
-const enter = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h\x1b[2J",
-  leave = "\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l",
+const enter = "\x1b[?1049h\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[2J",
+  leave = "\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[0m\x1b[?25h\x1b[?1049l",
   hide = Buffer.from("\x1b[?25l");
 
 /** Runs `ui` in this process's terminal until `stop` resolves, then restores
@@ -859,7 +1215,11 @@ export async function run(ui: VoiceUi, stop: Promise<void>, cleanup: () => Promi
     process.stdout.write("\x1b[2J");
     paint();
   };
+  // A signal tears down at once, and the stop it settles must not do it again.
+  let restored = false;
   const restore = () => {
+    if (restored) return;
+    restored = true;
     clearInterval(timer);
     clearTimeout(flush);
     process.stdin.off("data", onData);

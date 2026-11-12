@@ -18,6 +18,9 @@ import { Writer, writeEllipsis, displayWidth } from "./text";
 
 /** The most folders the list shows at once. */
 const folder_rows = 10;
+/** The card with the folder field and no list: the title, its note, both
+ * fields with their labels, the keys, and the border. */
+const field_only_height = 11;
 /** A press on the folder field, a folder in the list, or out and in. */
 export type Hit =
   nameDialog.Hit | { tag: "folder"; field: number } | { tag: "entry"; index: number } | { tag: "open" } | { tag: "up" };
@@ -87,10 +90,11 @@ export function isFolder(path: string): boolean {
  * making the folder failed. */
 export type Problem = "not_folder" | "not_created";
 
-/** Makes `path` and the folders above it; false when it can't. */
-export function make(path: string): boolean {
+/** Makes `path` and the folders above it, with `mode` before the umask;
+ * false when it can't. */
+export function make(path: string, mode = 0o777): boolean {
   try {
-    mkdirSync(path, { recursive: true });
+    mkdirSync(path, { recursive: true, mode });
     return isFolder(path);
   } catch {
     return false;
@@ -126,6 +130,8 @@ export class Browser {
   highlight: number | null = null;
   /** The first entry that shows. */
   first = 0;
+  /** The mode folders made here get, before the umask. */
+  folder_mode = 0o777;
   private listed: { folder: string; names: string[] | null } | null = null;
 
   constructor(
@@ -148,7 +154,7 @@ export class Browser {
     const folder = this.folder();
     if (isFolder(folder)) return realpathSync(folder);
     if (existsSync(folder)) this.problem = "not_folder";
-    else if (make(folder)) return realpathSync(folder);
+    else if (make(folder, this.folder_mode)) return realpathSync(folder);
     else this.problem = "not_created";
     return null;
   }
@@ -239,7 +245,7 @@ export class Browser {
     if (index === null) return;
     if (index < this.entries.length) return this.enter(join(this.parent, this.entries[index]));
     const folder = this.folder();
-    if (make(folder)) this.enter(folder);
+    if (make(folder, this.folder_mode)) this.enter(folder);
     else this.problem = "not_created";
   }
   /** Lists the folder above the one listed. */
@@ -327,30 +333,47 @@ export interface Moving {
   name: string;
 }
 
+/** What the dialog names in its folder: a new workspace, or the file voice
+ * mode records a transcript into. */
+export type Purpose = { workspace_name: null } | { transcript: null };
+
 /** The dialog: the name above, the browser below. Tab, and Up and Down past
  * either end, move the keys between them. */
 export class Dialog extends nameDialog.Dialog {
   browser: Browser;
-  /** The name is the browser's folder's, following it until edited. */
-  follows_folder = true;
+  /** The name is the browser's folder's, following it until edited; a
+   * transcript's name is its own. */
+  follows_folder: boolean;
   /** The workspace this moves, or null when it creates one. */
   readonly moving: number | null;
   /** Moving, with no room for the list: only the folder field shows, and it keeps the keys. */
   compact = false;
+  /** A line under the title, such as where a transcript goes; `warn` draws it in the warm color. */
+  note: { text: string; warn: boolean } | null = null;
 
-  /** Opens on the name, which follows the browser's folder. Moving a
-   * workspace opens on the folder, and its name follows only while it is
-   * still its folder's. */
-  constructor(browser: Browser, moving: Moving | null = null) {
-    super({ workspace_name: moving?.workspace ?? null });
+  /** Opens on the name, which for a workspace follows the browser's folder.
+   * Moving a workspace opens on the folder, and its name follows only while
+   * it is still its folder's. */
+  constructor(browser: Browser, opens: Moving | Purpose | null = null) {
+    super(opens === null || "workspace" in opens ? { workspace_name: opens?.workspace ?? null } : opens);
+    const moving = opens !== null && "workspace" in opens ? opens : null;
     this.browser = browser;
     this.moving = moving?.workspace ?? null;
+    this.follows_folder = !(opens !== null && "transcript" in opens);
     browser.focused = moving !== null;
     if (moving && moving.name !== workspace.folderName(browser.folder())) {
       this.follows_folder = false;
       this.fill(moving.name);
     }
     this.follow();
+  }
+  /** Opens on `name`, not selected, with the caret at character `caret`. */
+  static named(browser: Browser, purpose: Purpose, name: string, caret: number): Dialog {
+    const d = new Dialog(browser, purpose);
+    d.fill(name);
+    d.selected = false;
+    d.position(Buffer.byteLength([...name].slice(0, caret).join("")));
+    return d;
   }
   /** The real path of the folder to create the workspace in; see `Browser.confirm`. */
   confirm(): string | null {
@@ -468,15 +491,21 @@ interface Folders {
   first: number;
   entries: number;
 }
-const browserKeys = (moving: boolean) =>
+const browserKeys = (purpose: nameDialog.Target, moving: boolean) =>
   [
-    { key: "↵", label: moving ? i18n.t`save` : i18n.t`create`, hit: { tag: "save" } },
+    {
+      key: "↵",
+      label: moving ? i18n.t`save` : "transcript" in purpose ? i18n.t`record` : i18n.t`create`,
+      hit: { tag: "save" },
+    },
     { key: "←→", label: i18n.t`out / in`, hit: { tag: "key", index: 1 }, split: true },
     { key: "esc", label: i18n.t`cancel`, hit: { tag: "cancel" } },
   ] satisfies KeySpec[];
 /** Wide enough for the labelled keys two columns apart, and a column either side. */
-const browserWidth = (moving: boolean) =>
-  browserKeys(moving).reduce((n, k) => n + nameDialog.labelled(k), 0) + 2 * (browserKeys(moving).length - 1) + 4;
+const browserWidth = (purpose: nameDialog.Target, moving: boolean) => {
+  const keys = browserKeys(purpose, moving);
+  return keys.reduce((n, k) => n + nameDialog.labelled(k), 0) + 2 * (keys.length - 1) + 4;
+};
 /** Out and in before the folder has the keys: caps barely raised off the
  * panel, and the arrows and label in the border's color. */
 let quiet_cap: string, quiet_label: string;
@@ -530,12 +559,21 @@ export class View extends nameDialog.View {
   compact = false;
 
   /** Without room for three folders, the plain dialog is used instead; moving
-   * a workspace keeps its folder field, alone, in the plain dialog's place. */
+   * a workspace keeps its folder field, alone, in the plain dialog's place. A
+   * transcript's folder is never left out either: in voice mode's smaller
+   * window it shows fewer folders, or the folder field under the name. */
   static layout(width: number, height: number, d: Dialog): View | null {
-    const rows = Math.min(folder_rows, height - 15);
-    const w = Math.max(nameDialog.View.plainWidth(width), Math.min(width - 4, browserWidth(d.moving !== null)));
-    if (rows < 3 || w < 20) return d.moving !== null ? View.compactLayout(width, height, d) : null;
-    const h = rows + 13;
+    const fits = Math.min(folder_rows, height - 15),
+      transcript = "transcript" in d.target,
+      rows = fits >= (transcript ? 1 : 3) ? fits : 0;
+    const w = Math.max(
+      nameDialog.View.plainWidth(width),
+      Math.min(width - 4, browserWidth(d.target, d.moving !== null)),
+    );
+    if (w < 20 || (rows === 0 && !(transcript && height >= field_only_height)))
+      return d.moving !== null ? View.compactLayout(width, height, d) : null;
+    // The list's box takes two rows around its folders, and a row after it.
+    const h = rows ? rows + 13 : field_only_height;
     const x = Math.floor((width - w) / 2);
     const y = Math.floor((height - h) / 2);
     const b = d.browser;
@@ -570,7 +608,10 @@ export class View extends nameDialog.View {
   }
   /** The folder field laid out as the plain dialog lays out its field, with no list. */
   private static compactLayout(width: number, height: number, d: Dialog): View {
-    const w = Math.min(width, Math.max(nameDialog.View.plainWidth(width), Math.min(width - 4, browserWidth(true))));
+    const w = Math.min(
+      width,
+      Math.max(nameDialog.View.plainWidth(width), Math.min(width - 4, browserWidth(d.target, true))),
+    );
     const h = Math.min(height, 7);
     const y = Math.floor((height - h) / 2);
     const field_y = y + (h >= 7 ? 3 : h >= 5 ? 2 : 1);
@@ -597,7 +638,7 @@ export class View extends nameDialog.View {
     return v;
   }
   protected keys(): KeySpec[] {
-    return browserKeys(this.dialog.moving !== null);
+    return browserKeys(this.dialog.target, this.dialog.moving !== null);
   }
   protected title(d: nameDialog.Dialog): string {
     return this.dialog.moving !== null ? i18n.t`Change folder` : super.title(d);
@@ -633,6 +674,14 @@ export class View extends nameDialog.View {
       return;
     }
     const { left, room } = v.heading(d, w, number);
+    // On the problem's row, which it gives way to.
+    const note = v.dialog.note;
+    if (note && !b.problem) {
+      w.write(
+        `\x1b[${v.title_y + 2};${left + 1}H` + new Style({ fg: note.warn ? "warm" : "muted", bg: "surface" }).sgr(),
+      );
+      writeEllipsis(w, printable(note.text), room);
+    }
     if (b.problem) {
       w.write(`\x1b[${v.title_y + 2};${left + 1}H` + new Style({ fg: "hot", bg: "surface" }).sgr());
       writeEllipsis(w, problemMessage(b.problem), room);
@@ -656,7 +705,10 @@ export class View extends nameDialog.View {
     const f = v.folders;
     const b = v.dialog.browser;
     const label = new Style({ fg: "faint", bg: "surface" }).sgr();
-    w.write(`\x1b[${f.name_label_y + 1};${left + 1}H${label}` + i18n.t`Name`);
+    w.write(
+      `\x1b[${f.name_label_y + 1};${left + 1}H${label}` +
+        ("transcript" in v.dialog.target ? i18n.t`File name` : i18n.t`Name`),
+    );
     w.write(`\x1b[${f.label_y + 1};${left + 1}H${label}` + i18n.t`Folder`);
     const field = b.field;
     const plain = new Style({ fg: "text", bg: "selected" }).sgr();
@@ -664,6 +716,8 @@ export class View extends nameDialog.View {
     w.splat(" ", v.text_width + 2);
     w.write(`\x1b[${f.field_y + 1};${v.text_x + 1}H`);
     writeField(w, field, f.offset, v.text_width, plain);
+    // Too short for a list: the field alone.
+    if (f.rows === 0) return;
     // The list's box is as wide as the field.
     const right = left + v.text_width + 1;
     const edge = new Style({ fg: "line", bg: "surface" }).sgr();
