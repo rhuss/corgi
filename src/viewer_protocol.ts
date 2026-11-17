@@ -138,6 +138,7 @@ export async function synchronize(s: Server, cl: Client, q: Sync) {
   const before = cl.view_focus;
   cl.view_focus = cl.interests.some(i => i.pane === q.focus) ? q.focus : null;
   cl.watched = q.watched;
+  cl.visible = q.visible;
   cl.resources = q.resources;
   cl.resource_detail =
     q.resource_detail !== null && s.runtime.workspaces.get(q.resource_detail) ? q.resource_detail : null;

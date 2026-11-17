@@ -69,6 +69,8 @@ export class Client {
   held = false;
   snapshot_revision: bigint | null = null;
   watched = true;
+  /** Whether the viewer shows this machine, focused or not. */
+  visible = true;
   session_hash = 0n;
   session_shown = 0n;
   session_bucket = 0;
