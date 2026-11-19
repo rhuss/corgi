@@ -17,7 +17,7 @@ test("one voice attaches at a time", () => {
   expect(() => p.watch("b", { muted: false, available: true }, 0, seen)).toThrow("VoiceAttached");
   expect(p.drop("b")).toBe(false);
   expect(p.drop("a")).toBe(true);
-  expect(p.projection()).toBeUndefined();
+  expect(p.projection()).toBeNull();
   expect(p.watch("b", { muted: true, available: true }, 0, seen).muted).toBe(true);
 });
 
@@ -42,7 +42,7 @@ test("the lease runs out without voice.set", () => {
   // A daemon busy elsewhere has read a heartbeat it has not handled yet.
   expect(p.expire(6501, 6000)).toBe(false);
   expect(p.expire(6501)).toBe(true);
-  expect(p.projection()).toBeUndefined();
+  expect(p.projection()).toBeNull();
   expect(() => p.set({ voice_id }, 7000)).toThrow("VoiceGone");
   expect(() => p.toggle()).toThrow("NoVoice");
 });

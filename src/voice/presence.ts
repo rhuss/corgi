@@ -101,9 +101,9 @@ export class Presence {
     if (pane === this.current?.pane) throw Error("VoicePane");
     return { viewer: last.viewer_id, pane };
   }
-  projection(): { state: VoiceState } | undefined {
+  projection(): { state: VoiceState } | null {
     const voice = this.current;
-    if (!voice) return undefined;
+    if (!voice) return null;
     return { state: voice.muted || !voice.available ? "muted" : "listening" };
   }
 }
