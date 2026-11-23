@@ -92,6 +92,16 @@ function adopt(
   child.observed_at = now;
   return true;
 }
+/** Counts the parent's subagents that wait on a prompt, and ends the alert
+ * they raised once none does. */
+function recount(registry: Registry, parent: Actor) {
+  let blocked = 0;
+  for (const child of registry.items) if (child.parent === parent.id && child.state.state === "blocked") blocked++;
+  parent.state.subagents.blocked = blocked;
+  const own = parent.state;
+  if (!blocked && own.attention === "needs_input" && own.state !== "blocked")
+    own.attention = own.observation.unread() ? "finished" : "none";
+}
 /** Makes `found` the parent's subagents, and idles the ones a complete list leaves out. */
 function follow(registry: Registry, parent: Actor, found: Children, now: number) {
   parent.state.subagents.running = found.running;
@@ -103,6 +113,7 @@ function follow(registry: Registry, parent: Actor, found: Children, now: number)
         child.state.state = "idle";
         child.observed_at = now;
       }
+  recount(registry, parent);
 }
 /** Follows a hook the parent applied: subagents it launched or a Stop lists,
  * and a pause while its background work can wake it. */
@@ -140,21 +151,46 @@ export function applied(registry: Registry, actor: Actor, event: any, seq: bigin
     actor.paused_for_wakeup = wakes;
   }
 }
-/** A subagent's start or stop, which leaves its parent's own state alone. */
-export function child(registry: Registry, parent: Actor, event: any, now: number) {
-  if (event.kind === "subagent_stop") {
-    // The list still has the stopping subagent running.
-    const listed = children(event.background_tasks);
-    if (listed) follow(registry, parent, listed.without(event.subagent), now);
-    return;
+/** A subagent's start, stop or permission prompt, which leaves its parent's
+ * own state alone. True when its prompt should alert. */
+export function child(registry: Registry, parent: Actor, event: any, now: number, watched: boolean) {
+  const found = registry.find(parent.provider(), event.subagent),
+    known = found?.parent === parent.id ? found : null;
+  switch (event.kind) {
+    case "subagent_stop": {
+      if (known?.state.state === "blocked") {
+        known.state.state = "idle";
+        known.observed_at = now;
+      }
+      // The list still has the stopping subagent running.
+      const listed = children(event.background_tasks);
+      if (listed) follow(registry, parent, listed.without(event.subagent), now);
+      else recount(registry, parent);
+      return false;
+    }
+    // Only a background subagent's prompt is its own: a foreground one's
+    // shows on its parent's screen, and blocks the parent.
+    case "subagent_permission":
+      if (!known || known.state.state === "blocked") return false;
+      known.state.state = "blocked";
+      known.observed_at = now;
+      recount(registry, parent);
+      if (!watched) parent.state.attention = "needs_input";
+      return !watched;
+    case "subagent_tool":
+      if (known?.state.state !== "blocked") return false;
+      known.state.state = "working";
+      known.observed_at = now;
+      recount(registry, parent);
+      return false;
   }
   // A launch adopts a new subagent; a start only revives one a message resumed.
-  const known = registry.find(parent.provider(), event.subagent);
-  if (!known || known.parent !== parent.id || known.state.state === "working") return;
+  if (!known || known.state.state === "working") return false;
   known.state.state = "working";
   known.observed_at = now;
   parent.state.subagents.running = Math.min(0xffffffff, parent.state.subagents.running + 1);
   parent.children_observed_at = now;
+  return false;
 }
 /** Whether the process that holds a pause still runs Claude Code. */
 export function holds(pid: number) {

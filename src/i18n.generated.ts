@@ -381,6 +381,7 @@ profile/ID、克隆名称或 command/N，以 launcher list 中的名称为准。
       `智能体控制（--json 将守护进程的响应以 JSON 输出）：`,
     '["Agent default"]': () => `智能体默认值`,
     '["Agent launch command"]': () => `智能体启动命令`,
+    '["Agent needs input"]': () => `智能体等待输入`,
     '["Agent or new terminal"]': () => `智能体或新终端`,
     '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
       `智能体设置全局共享；顺序和可见性则属于各自的工作区。`,
@@ -1867,6 +1868,7 @@ ${v1} 使用该账号。
       `エージェント操作（--jsonでデーモンの応答をJSON出力）：`,
     '["Agent default"]': () => `エージェントの既定値`,
     '["Agent launch command"]': () => `エージェントの起動コマンド`,
+    '["Agent needs input"]': () => `エージェントが入力待ち`,
     '["Agent or new terminal"]': () => `エージェントか新しい端末`,
     '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
       `エージェント設定は共有され、順序と表示設定はワークスペースごとに保存されます。`,
@@ -3380,6 +3382,7 @@ profile/ID, 복제본 이름 또는 command/N이며 launcher list에 표시된 �
       `에이전트 제어(--json은 데몬 응답을 JSON으로 출력):`,
     '["Agent default"]': () => `에이전트 기본값`,
     '["Agent launch command"]': () => `에이전트 실행 명령`,
+    '["Agent needs input"]': () => `에이전트 입력 필요`,
     '["Agent or new terminal"]': () => `에이전트 또는 새 터미널`,
     '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
       `에이전트 설정은 공유되며 순서와 표시 여부는 작업 공간별로 관리합니다.`,
@@ -5310,6 +5313,7 @@ profile/ID, имя копии или command/N — как в выводе launch
       `Управление агентами (--json выводит ответ сервера в JSON):`,
     '["Agent default"]': () => `По умолчанию у агента`,
     '["Agent launch command"]': () => `Команда запуска агента`,
+    '["Agent needs input"]': () => `Агент ждёт ввода`,
     '["Agent or new terminal"]': () => `Агент или новый терминал`,
     '["Agent settings are shared; order and visibility belong to each workspace."]': () =>
       `Настройки агентов общие; порядок и видимость задаются отдельно для каждого пространства.`,

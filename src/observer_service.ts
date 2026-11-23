@@ -413,11 +413,16 @@ function apply(server: Server, actor: Actor, held: Held, now: number) {
   const runtime = server.runtime,
     workers = start(server);
   if (held.pid > 0) actor.pid = held.pid;
-  attention(
-    server,
-    runtime.conversations.observeHook(actor, held.event, held.seq, actorWatched(server, actor.id), now, held.presence),
-    actor.state.state,
+  const ding = runtime.conversations.observeHook(
+    actor,
+    held.event,
+    held.seq,
+    actorWatched(server, actor.id),
+    now,
+    held.presence,
   );
+  // A subagent's prompt asks for input while its parent works on.
+  attention(server, ding, actor.state.attention === "needs_input" ? "blocked" : actor.state.state);
   workers.summaries.reconcile(runtime.conversations.items, runtime.panes);
   if (held.event.initial_request) workers.summaries.names.offer(actor, held.event.initial_request);
   changed(server);

@@ -569,6 +569,7 @@
   "Agent controls (--json prints the daemon's reply as JSON):": "Управление агентами (--json выводит ответ сервера в JSON):",
   "Agent default": "По умолчанию у агента",
   "Agent launch command": "Команда запуска агента",
+  "Agent needs input": "Агент ждёт ввода",
   "Agent or new terminal": "Агент или новый терминал",
   "Agent settings are shared; order and visibility belong to each workspace.": "Настройки агентов общие; порядок и видимость задаются отдельно для каждого пространства.",
   "Agent states unavailable": "Состояния агентов неизвестны",

@@ -757,7 +757,7 @@ test("a Claude subagent ends at its SubagentStop, without its parent's Stop", ()
     },
     { hook_event_name: "SubagentStart", session_id: "parent", agent_id: "a1", agent_type: "general-purpose" },
   ].map(value => hooks.decode(value));
-  expect(inside).toBeNull();
+  expect(inside).toMatchObject({ kind: "subagent_tool", subagent: "a1" });
   expect(ended).toMatchObject({ kind: "subagent_stop", subagent: "a1", subagent_type: "general-purpose" });
   registry.observeHook(parent, prompt!, 1n, false, 100);
   registry.observeHook(parent, launch!, 2n, false, 200);
@@ -774,6 +774,77 @@ test("a Claude subagent ends at its SubagentStop, without its parent's Stop", ()
   registry.observeHook(parent, resumed!, 6n, false, 600);
   expect(a1.state.state).toBe("working");
   expect(parent.state.subagents.running).toBe(1);
+});
+
+/** A Claude parent whose turn ended with background subagent a1 still running. */
+function backgroundAgent() {
+  const registry = new Registry();
+  const parent = registry.get("claude", "parent");
+  const hooks = new Hooks();
+  const decode = (value: object) => hooks.decode({ session_id: "parent", ...value })!;
+  const inside = (hook_event_name: string, more: object = {}) =>
+    decode({ hook_event_name, agent_id: "a1", agent_type: "general-purpose", tool_name: "Bash", ...more });
+  const running = [{ id: "a1", type: "subagent", status: "running", description: "Lane A" }];
+  registry.observeHook(parent, decode({ hook_event_name: "UserPromptSubmit" }), 1n, false, 100);
+  registry.observeHook(
+    parent,
+    decode({
+      hook_event_name: "PostToolUse",
+      tool_name: "Agent",
+      tool_input: { description: "Lane A", subagent_type: "general-purpose" },
+      tool_response: { status: "async_launched", agentId: "a1" },
+    }),
+    2n,
+    false,
+    200,
+  );
+  registry.observeHook(parent, decode({ hook_event_name: "Stop", background_tasks: running }), 3n, false, 300);
+  const notification = decode({ hook_event_name: "Notification", notification_type: "permission_prompt" });
+  return { registry, parent, a1: registry.find("claude", "a1")!, inside, notification, running };
+}
+
+test("a background Claude subagent's permission prompt is its own, not its parent's", () => {
+  const { registry, parent, a1, inside, notification } = backgroundAgent();
+  expect(registry.observeHook(parent, inside("PreToolUse"), 4n, false, 400)).toBe(false);
+  expect(registry.observeHook(parent, inside("PermissionRequest"), 5n, false, 500)).toBe(true);
+  expect(a1.state.state).toBe("blocked");
+  expect(parent.state.subagents.blocked).toBe(1);
+  expect(parent.state.attention).toBe("needs_input");
+  // The prompt's notification names no agent; it repeats the subagent's request.
+  expect(registry.observeHook(parent, notification, 6n, false, 600)).toBe(false);
+  expect(parent.state.state).toBe("working");
+  expect(registry.observeHook(parent, inside("PostToolUse"), 7n, false, 700)).toBe(false);
+  expect(a1.state.state).toBe("working");
+  expect(parent.state.subagents.blocked).toBe(0);
+  expect(parent.state.attention).toBe("none");
+  expect(parent.state.state).toBe("working");
+});
+
+test("a watched parent takes its subagent's permission prompt without an alert", () => {
+  const { registry, parent, a1, inside } = backgroundAgent();
+  expect(registry.observeHook(parent, inside("PermissionRequest"), 4n, true, 400)).toBe(false);
+  expect(a1.state.state).toBe("blocked");
+  expect(parent.state.subagents.blocked).toBe(1);
+  expect(parent.state.attention).toBe("none");
+});
+
+test("a Claude subagent that stops at its permission prompt no longer waits on it", () => {
+  const { registry, parent, a1, inside, running } = backgroundAgent();
+  registry.observeHook(parent, inside("PermissionRequest"), 4n, false, 400);
+  registry.observeHook(parent, inside("SubagentStop", { background_tasks: running }), 5n, false, 500);
+  expect(a1.state.state).toBe("idle");
+  expect(parent.state.subagents).toMatchObject({ running: 0, blocked: 0 });
+  expect(parent.state.attention).toBe("none");
+});
+
+test("a foreground Claude subagent's permission prompt still blocks its parent", () => {
+  const { registry, parent, inside, notification } = backgroundAgent();
+  const unknown = { ...inside("PermissionRequest"), subagent: "f1" };
+  expect(registry.observeHook(parent, unknown, 4n, false, 400)).toBe(false);
+  expect(registry.find("claude", "f1")).toBeNull();
+  expect(registry.observeHook(parent, notification, 5n, false, 500)).toBe(true);
+  expect(parent.state.state).toBe("blocked");
+  expect(parent.state.attention).toBe("needs_input");
 });
 
 test("a Claude session's end ends the subagents its last Stop listed", () => {

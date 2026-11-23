@@ -104,6 +104,10 @@ export function timestampMs(s: string): number | null {
   return Date.UTC(y, m - 1, d, h, min, sec, ms);
 }
 export type Hook = ReturnType<Hooks["decode"]>;
+/** Whether a hook is about one of the session's subagents, not the session. */
+export function childEvent(kind: string) {
+  return ["subagent_start", "subagent_stop", "subagent_permission", "subagent_tool"].includes(kind);
+}
 /** Where Claude's EnterWorktree and ExitWorktree report moving the session. */
 const moves: Record<string, string> = { EnterWorktree: "worktreePath", ExitWorktree: "restoredCwd" };
 export class Hooks {
@@ -126,11 +130,16 @@ export class Hooks {
       SessionEnd: "session_end",
       Notification: "notification",
     };
-    // A subagent's own hooks name it in agent_id; only its start and stop
-    // are news to the session that runs it.
+    // A subagent's own hooks name it in agent_id. The session that runs it
+    // follows its start and stop, a permission it waits on, and its tools
+    // that show it went on.
     const subagent_kinds: Record<string, string> = {
       SubagentStart: "subagent_start",
       SubagentStop: "subagent_stop",
+      PermissionRequest: "subagent_permission",
+      PreToolUse: "subagent_tool",
+      PostToolUse: "subagent_tool",
+      PostToolUseFailure: "subagent_tool",
     };
     const agent = str(v, "agent_id"),
       kind = (agent ? subagent_kinds : session_kinds)[str(v, "hook_event_name")];
