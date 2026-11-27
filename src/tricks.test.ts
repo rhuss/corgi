@@ -74,7 +74,7 @@ test("stopping a trick doesn't wait on a helper that holds its pipes open", asyn
   mkdirSync(join(root, "helper"));
   writeFileSync(
     join(root, "helper", "trick.toml"),
-    `version = 1\nid = "helper"\ncommand = ["sh", "-c", "setsid sh -c 'echo $$ > ${pid}; exec sleep 30' & exec sleep 30"]\n`,
+    `version = 1\nid = "helper"\ncommand = ["sh", "-c", "perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' sh -c 'echo $$ > ${pid}; exec sleep 30' & exec sleep 30"]\n`,
   );
   process.env.CORGI_TRICKS_DIR = root;
   const host = new trickHost.Host(

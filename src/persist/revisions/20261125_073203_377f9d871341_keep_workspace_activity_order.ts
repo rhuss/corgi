@@ -2,7 +2,7 @@ import type { Revision } from "../formats";
 
 export const revision: Revision = {
   id: "377f9d871341",
-  parent: "428273850636",
+  parent: "904e5f6a3ee6",
   description: "Keep workspace activity order",
   // Workspace activity fields and auto_order are optional: restore defaults
   // them when missing and older daemons ignore them, so metadata passes as is.

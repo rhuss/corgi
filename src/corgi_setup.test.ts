@@ -282,7 +282,7 @@ test("setup guards the visible pane, including previews and read-only sections",
     menu.hover(100, 30, 16, 4, s, prefs, 200);
     let now = 200;
     for (const [x, row] of walk(16, 4, 35, y)) menu.hover(100, 30, x, row, s, prefs, (now += 16));
-    expect(menu.item).toBe("flourishes");
+    expect(menu.item === "flourishes").toBe(kept);
   }
   // Reading a section should not switch it when crossing another list item.
   const menu = Menu.open();
