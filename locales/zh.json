@@ -323,6 +323,7 @@
   "Agent controls (--json prints the daemon's reply as JSON):": "智能体控制（--json 将守护进程的响应以 JSON 输出）：",
   "Agent default": "智能体默认值",
   "Agent launch command": "智能体启动命令",
+  "Agent needs input": "智能体等待输入",
   "Agent or new terminal": "智能体或新终端",
   "Agent settings are shared; order and visibility belong to each workspace.": "智能体设置全局共享；顺序和可见性则属于各自的工作区。",
   "Agent states unavailable": "代理状态不可用",

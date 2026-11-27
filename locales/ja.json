@@ -323,6 +323,7 @@
   "Agent controls (--json prints the daemon's reply as JSON):": "エージェント操作（--jsonでデーモンの応答をJSON出力）：",
   "Agent default": "エージェントの既定値",
   "Agent launch command": "エージェントの起動コマンド",
+  "Agent needs input": "エージェントが入力待ち",
   "Agent or new terminal": "エージェントか新しい端末",
   "Agent settings are shared; order and visibility belong to each workspace.": "エージェント設定は共有され、順序と表示設定はワークスペースごとに保存されます。",
   "Agent states unavailable": "エージェントの状態は不明です",

@@ -31,6 +31,18 @@ test("idle notifications do not mark a finished agent as needing input", () => {
     })?.kind,
   ).toBe("notification");
 });
+test("a subagent's permission request and tool use name the subagent", () => {
+  const hooks = new Hooks(),
+    inside = { session_id: "parent", agent_id: "a1", agent_type: "general-purpose", tool_name: "Bash" };
+  expect(hooks.decode({ ...inside, hook_event_name: "PermissionRequest" })).toMatchObject({
+    kind: "subagent_permission",
+    subagent: "a1",
+    tool: "Bash",
+  });
+  for (const name of ["PreToolUse", "PostToolUse", "PostToolUseFailure"])
+    expect(hooks.decode({ ...inside, hook_event_name: name })).toMatchObject({ kind: "subagent_tool", subagent: "a1" });
+  expect(hooks.decode({ ...inside, hook_event_name: "UserPromptSubmit" })).toBeNull();
+});
 test("hooks carry the session's current model", () => {
   expect(
     new Hooks().decode({

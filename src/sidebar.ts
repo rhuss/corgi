@@ -383,6 +383,7 @@ export function rowDetail(e: Data, now_ms: number | null = Date.now()): string {
     return i18n.t`Retrying in ${wait}`;
   }
   if (compacting) return i18n.t`Compacting…`;
+  if (e.state !== "blocked" && e.subagents.blocked > 0) return i18n.t`Agent needs input`;
   if (waiting) return i18n.t`Waiting on agents`;
   switch (e.state) {
     case "working":

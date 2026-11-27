@@ -11,6 +11,7 @@ import { Model } from "./providers/model";
 import { PromptWatch } from "./detection";
 import type { Snapshot } from "./providers/snapshot";
 import { adapter } from "./providers";
+import { childEvent } from "./providers/common";
 import * as worktrees from "./worktrees";
 export const max_actors = 1024;
 export type ActorId = number & { readonly __actorId: unique symbol };
@@ -395,7 +396,7 @@ export class Registry {
     return false;
   }
   observeHook(actor: Actor, event: any, seq: bigint, watched: boolean, now: number, presence: Presence = "detached") {
-    if (event.kind === "subagent_start" || event.kind === "subagent_stop") {
+    if (childEvent(event.kind)) {
       // Child hooks share a transport, not their parent's or siblings' event order.
       const child = this.find(actor.provider(), event.subagent);
       if (
@@ -404,11 +405,15 @@ export class Registry {
           (seq === child.state.last_seq && child.state.state === "idle" && event.kind === "subagent_start"))
       )
         return false;
-      adapter(actor.provider()).conversation?.child?.(this, actor, event, now);
+      const ding = adapter(actor.provider()).conversation?.child?.(this, actor, event, now, watched) === true;
       const updated = this.find(actor.provider(), event.subagent);
       if (updated?.parent === actor.id) updated.state.last_seq = seq;
-      return false;
+      return ding;
     }
+    // A subagent's permission prompt notifies without naming it, just after
+    // the request that does.
+    if (event.permission_notification && this.items.some(c => c.parent === actor.id && c.state.state === "blocked"))
+      return false;
     const accepted = actor.state.last_seq;
     const ding = actor.observeHook(event, seq, watched, now, presence);
     if (actor.state.last_seq !== accepted)
@@ -449,7 +454,7 @@ export class Registry {
    * already shows. */
   routeHook(binding: Attachment, provider: Provider, event: any, binds: boolean) {
     if (!event.session) return null;
-    if (event.kind === "subagent_start" || event.kind === "subagent_stop") {
+    if (childEvent(event.kind)) {
       const actor = this.find(provider, event.session);
       let ancestor = actor;
       for (let i = 0; ancestor && i < max_actors; i++) {

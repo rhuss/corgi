@@ -2236,6 +2236,20 @@ test("an agent waiting on a retry shows a warm pause and counts down", () => {
   ]);
 });
 
+test("a parent whose subagent waits on a prompt says the agent needs input", () => {
+  const e = entry({
+    target: viewerRef.pane(0, 1),
+    name: "Agent title",
+    provider: "claude",
+    state: "working",
+    attention: "needs_input",
+    subagents: { running: 1, blocked: 1, waiting: true },
+  });
+  expect([status(e), rowDetail(e)]).toEqual(["needs_input", "Agent needs input"]);
+  expect(rowDetail({ ...e, subagents: { running: 1, blocked: 0, waiting: true } })).toBe("Waiting on agents");
+  expect(rowDetail({ ...e, state: "blocked" })).toBe("Needs input");
+});
+
 /** A rename open on `target` with the caret at the end of `text`, as the controller opens one. */
 const renaming = (target: RenameTarget, text: string, fallback = "", message: string | null = null): RenameState => {
   const field = Dialog.init(
